@@ -29,7 +29,7 @@ GeneralModelCase = namedtuple("GeneralModelCase", [
 def get_general_model_serving_case(case, prof_database=None):
     assert isinstance(case, GeneralModelCase), "not GeneralModelCase"
     if prof_database is None:
-        prof_database = ProfilingDatabase("profiling_result.pkl")
+        prof_database = ProfilingDatabase("/home/zhangy/python_project/mms/alpa_serve/profiling_result.pkl")
 
     (exp_name, num_devices, mem_budget, model_types, model_names,
      total_rate, rate_distribution, arrival_process, arrival_process_kwargs,

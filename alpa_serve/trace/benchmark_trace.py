@@ -7,7 +7,7 @@ import numpy as np
 # trace_dir = "/mnt/e/projects/projects/dataset/mms_dataset/azure_v2.pkl"
 
 trace_name = "azure_v1"
-trace_dir = "/mnt/e/projects/projects/dataset/mms_dataset/azure_v1.pkl"
+trace_dir = "/home/zhangy/data/datasets/azurefunctions-dataset2019/azure_v1.pkl"
 
 n_model = 48
 models = [f"gpt{i}" for i in range(n_model)]
@@ -48,6 +48,8 @@ for day in range(14):
 
 print(entropies)
 print(max(entropies.values()))
+
+
 
 # for day in range(13, 14):
 #     start_time = str(day) + ".0.0"

@@ -358,6 +358,17 @@ def load_test_prof_result(name: str):
 
 # database = ProfilingDatabase("profiling_result.pkl", False)
 # bert_1_3b = database.get("bert-1.3b")
+
+# # 输出bert-1.3b的所有结果
+# for key in bert_1_3b.para_dict.keys():
+#     print(key)
+#     print(bert_1_3b.para_dict[key].latency)
+#     print(bert_1_3b.para_dict[key].act_mem)
+#     print(bert_1_3b.para_dict[key].weight_mem)
+#     print(bert_1_3b.para_dict[key].metadata)
+#     print()
+
+
 # bert_2_6b = database.get("bert-2.6b")
 # bert_6_7b = database.get("bert-6.7b")
 # print(bert_1_3b.para_dict[ParallelConfig(1,4,4)].latency[8])
