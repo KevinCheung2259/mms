@@ -69,7 +69,7 @@ benchmarks/**/*.png
 
 # Numpy cache
 *.npy
-*.pkl
+# *.pkl
 benchmarks/alpa/tmp*
 *.log
 

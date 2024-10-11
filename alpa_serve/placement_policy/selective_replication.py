@@ -11,7 +11,7 @@ from alpa_serve.profiling import ParallelConfig
 from alpa_serve.placement_policy.base_policy import (
     BasePlacementPolicy, ModelPlacement, ModelData, ClusterEnv,
     PlacementEvaluator, gen_train_workload, ModelPlacementWithReplacement,
-    replica_placement_fast_greedy, replica_placement_beam_search)
+    replica_placement_fast_greedy, replica_placement_beam_search, evolutionary_search)
 from alpa_serve.simulator.workload import Workload
 from alpa_serve.util import eps, inf, to_str_round
 

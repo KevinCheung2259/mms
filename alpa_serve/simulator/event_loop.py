@@ -157,6 +157,9 @@ class EventLoop:
         return tc.resume_event.wait()
 
     def wait_stream(self, name: Union[str, int], duration: float):
+        '''
+        模拟环境中管理和同步不同流的执行时间。通过更新流的时钟和返回等待时间，可以协调多个流的执行顺序和时间
+        '''
         assert duration >= 0
 
         stream = self.streams[name]

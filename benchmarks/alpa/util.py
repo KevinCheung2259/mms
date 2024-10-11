@@ -14,6 +14,10 @@ def build_logger():
 
 
 def get_model_def(name, is_simulator, prof_database):
+    '''
+    根据给定的模型名称、是否为模拟器模式以及一个profile数据库来
+    返回一个模型的部分应用（partial application）
+    '''
     result = prof_database.get(name)
     if result is None:
         raise ValueError(f"Invalid model name: {name}")

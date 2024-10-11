@@ -238,7 +238,7 @@ class Client:
     async def submit_workload(self, workload: Workload):
         num_requests = len(workload)
         start, finish, good = (np.zeros(num_requests),
-            np.zeros(num_requests), np.zeros(num_requests, dtype=np.bool))
+            np.zeros(num_requests), np.zeros(num_requests, dtype=np.bool_))
         self.res_dict[workload] = (start, finish, good)
 
         http_overheads = np.abs(np.random.normal(
@@ -397,7 +397,7 @@ def approximate_one_case(case: ServingCase,
             model_names[i], model_num_requests[i],
             model_num_good_requests[i] / (model_num_requests[i] + eps),
             model_num_requests[i] / interval,
-            0, 0, 0, 0, [], [], []) for i in range(len(model_names))]
+            0, 0, 0, 0, [], [], [], [], [], [], []) for i in range(len(model_names))]
         stats = StatsResult(per_model_stats, tuple(group_num_requests),
                             np.mean(good), np.mean(finish - start),
                             len(start), len(start) / interval)
@@ -414,6 +414,7 @@ def approximate_one_case_one_placement(placement, model_names, prof_ress, model_
     num_groups = len(group_configs)
     num_models = len(model_names)
     num_requests = len(arrivals)
+    # 统计每个模型的数量
     num_replicas = [0] * num_models
     m_id2g_id = np.full((num_models, num_groups), -1, dtype=np.int32)
     for g_id, m_ids in enumerate(group_models):
@@ -421,6 +422,7 @@ def approximate_one_case_one_placement(placement, model_names, prof_ress, model_
             m_id2g_id[m_id][num_replicas[m_id]] = g_id
             num_replicas[m_id] += 1
 
+    # 统计每个group的模型数量
     num_instances = [0] * num_groups
     g_id2m_id = np.full((num_groups, num_models), -1, dtype=np.int32)
     for m_id, g_ids in enumerate(m_id2g_id):
@@ -430,6 +432,8 @@ def approximate_one_case_one_placement(placement, model_names, prof_ress, model_
                 num_instances[g_id] += 1
 
     max_bs = 1
+
+    # 计算每个模型在每个group的最大延迟和总延迟
     group_max_latency = np.empty((num_models, num_groups), dtype=np.float32)
     group_sum_latency = np.empty((num_models, num_groups), dtype=np.float32)
     for m_id in range(num_models):
@@ -463,6 +467,7 @@ def approximate_one_case_one_placement(placement, model_names, prof_ress, model_
             # num_stages: (num_groups,)
             num_stages = np.array([c.pp for c in group_configs], dtype=np.int32)
             max_num_stages = np.max(num_stages)
+            # 计算每个model在每个group中每个stage的延迟
             # stage_latency: (num_models, num_groups, max_num_stages)
             stage_latency = np.empty((num_models, num_groups, max_num_stages), dtype=np.float32)
             for m_id in range(num_models):

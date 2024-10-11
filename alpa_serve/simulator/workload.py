@@ -28,7 +28,9 @@ class Request:
 PerModelStatsResult = namedtuple("PerModelStatsResult",
         ("name", "num_requests", "goodput", "throughput",
          "latency_mean", "latency_std", "latency_p90", "latency_p99", "latency",
-         "request_starts", "request_finishes"))
+         "request_starts", "request_finishes", 
+         # 新增属性
+         "model_is_running", "model_received_requests", "model_returned_requests", "model_dropped_requests"))
 
 PerDeviceStatsResult = namedtuple("PerDeviceStatsResult", ("num_requests",))
 
@@ -345,10 +347,36 @@ class Workload:
             latency_p90 = sorted_latency[int(0.90 * len(sorted_latency))]
             latency_p99 = sorted_latency[int(0.99 * len(sorted_latency))]
 
+            # 遍历每个请求，记录每个模型每0.1s是否在运行
+            model_is_running = [False] * 3600 * 10
+            for i in range(len(tmp_start)):
+                start_time = int(tmp_start[i] * 10)
+                end_time = int(tmp_finish[i] * 10)
+                for j in range(start_time, end_time):
+                    model_is_running[j] = True
+
+            # 遍历每个请求，记录每个模型每0.1s收到的请求、返回和弃置的请求
+            model_received_requests = [0] * 3600 * 10
+            model_returned_requests = [0] * 3600 * 10
+            model_dropped_requests = [0] * 3600 * 10
+            requests_start = start[indices]
+            requests_finish = finish[indices][tmp_good]
+            for i in range(len(requests_start)):
+                start_time = int(requests_start[i] * 10)
+                model_received_requests[start_time] += 1
+                if not tmp_good[i]:
+                    model_dropped_requests[start_time] += 1
+            for i in range(len(requests_finish)):
+                start_time = int(requests_finish[i] * 10)
+                model_returned_requests[start_time] += 1
+                
+
             stats.append(PerModelStatsResult(
                 name, len(indices), goodput, throughput,
                 np.mean(latency), np.std(latency),
-                latency_p90, latency_p99, latency, tmp_start, tmp_finish))
+                latency_p90, latency_p99, latency, tmp_start, tmp_finish,
+                # 新增属性
+                model_is_running, model_received_requests, model_returned_requests, model_dropped_requests))
 
         return StatsResult(stats, None, np.mean(good), np.mean(finish - start),
                            len(start), len(start) / (start[-1] - start[0]))
@@ -356,6 +384,7 @@ class Workload:
     @staticmethod
     def print_stats(stats: StatsResult):
         """Print the statistics of serving results."""
+        print("Print the statistics of serving results.")
         if stats.per_model_stats:
             print("--- per model ---")
             for stat in stats.per_model_stats:

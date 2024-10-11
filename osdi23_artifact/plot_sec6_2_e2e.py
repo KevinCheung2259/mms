@@ -286,8 +286,8 @@ def plot_goodput_vs_cv_scale(azurev1_lines, azurev2_lines, threshold, folder, pd
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, default="sec6_2_data")
-    parser.add_argument("--output-dir", type=str, default="paper_figures")
+    parser.add_argument("--input", type=str, default="osdi23_artifact/sec6_2_data")
+    parser.add_argument("--output-dir", type=str, default="osdi23_artifact/paper_figures")
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--pdf", action="store_true")
     args = parser.parse_args()

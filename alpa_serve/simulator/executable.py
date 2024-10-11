@@ -5,6 +5,9 @@ from alpa_serve.simulator.event_loop import clock, timed_coroutine, wait_stream,
 
 
 class Executable:
+    '''
+    执行器类，负责处理请求并计算延迟
+    '''
     def __init__(self,
                  profiling_result: ProfilingResult,
                  parallel_config: ParallelConfig,
@@ -29,6 +32,9 @@ class Executable:
 
     @timed_coroutine
     async def handle_request(self, request):
+        '''
+        处理请求的函数，模拟了请求在集群中的处理过程，记录了请求的开始和结束时间
+        ''' 
         request.time_stamp["d"] = clock()
         batch_size = 1
 

@@ -187,6 +187,9 @@ class TraceReplay:
                                         for i in range(len(self.arrivals))])
 
     def report_stats(self):
+        '''
+        打印每个模型trace的统计信息
+        '''
         print(f"Trace for {self.model}, duration: {self.duration}, {self.duration_seconds} (s), #arrivals: {self.arrivals.size}, "
               f"arrival distribution: {self.arrival_distribution}, "
               f"generation interval: {self.interval_seconds}, "
@@ -254,6 +257,9 @@ class TraceReplay:
 
 
 def report_group_stats(replays: List[TraceReplay]):
+    '''
+    打印整个group的trace统计信息
+    '''
     n_model = len(replays)
     all_arrivals = np.concatenate([m.arrivals for m in replays])
     arrivals = np.sort(all_arrivals)
