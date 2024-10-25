@@ -307,9 +307,17 @@ class Workload:
         ws.append(self[start_i:])
         return ws
 
-    def compute_stats(self, start: Sequence[float], finish: Sequence[float],
-                      good: Sequence[bool], warmup: float):
+    def compute_stats(self, start: Sequence[float], finish: Sequence[float], good: Sequence[bool], warmup: float = DEFAULT_WARMUP,
+                      receive_request_model_ids: Optional[Sequence[int]] = None, 
+                      unique_model_types: Optional[Sequence[str]] = None,
+                      model_names: Optional[Sequence[str]] = None, **kwargs):
         """Compute the statistics of serving results."""
+        sample_interval = kwargs.get("sample_interval", 1)
+        duration = kwargs.get("duration", 3600)
+
+        # 记录开始时间，因为azure_v2不是从0开始的
+        begin_time = start[0]
+
         # Skip the first and last `warmup` seconds
         if len(self.arrivals) > 1:
             skip = int(warmup / (self.arrivals[-1] - self.arrivals[0]) * len(self.arrivals))
@@ -317,15 +325,25 @@ class Workload:
                 start = start[skip:-skip]
                 finish = finish[skip:-skip]
                 good = good[skip:-skip]
+                if receive_request_model_ids is not None:
+                    receive_request_model_ids = receive_request_model_ids[skip:-skip]
                 requests = self.requests[skip:-skip]
 
         # Compute stats per model
         model_indices = defaultdict(list)
+        if unique_model_types is not None:
+            for m in model_names:
+                model_indices[m] = []
         for i in range(len(requests)):
-            model_indices[requests[i].model_name].append(i)
+            if unique_model_types is None:
+                model_indices[requests[i].model_name].append(i)
+            else:
+                if receive_request_model_ids[i] >= 0:
+                    model_indices[model_names[receive_request_model_ids[i]]].append(i)
 
         names = list(model_indices.keys())
-        names.sort(key=lambda name: len(model_indices[name]))
+        names = np.sort(names)
+        names = sorted(names, key=lambda name: len(model_indices[name]) if model_indices[name] else float('inf'))
 
         stats = []
         for name in names:
@@ -348,28 +366,27 @@ class Workload:
             latency_p99 = sorted_latency[int(0.99 * len(sorted_latency))]
 
             # 遍历每个请求，记录每个模型每0.1s是否在运行
-            model_is_running = [False] * 3600 * 10
+            model_is_running = [False] * int(duration * 1 / sample_interval)
             for i in range(len(tmp_start)):
-                start_time = int(tmp_start[i] * 10)
-                end_time = int(tmp_finish[i] * 10)
+                start_time = int((tmp_start[i]-begin_time) * 1 / sample_interval)
+                end_time = int((tmp_finish[i]-begin_time) * 1 / sample_interval)
                 for j in range(start_time, end_time):
                     model_is_running[j] = True
 
             # 遍历每个请求，记录每个模型每0.1s收到的请求、返回和弃置的请求
-            model_received_requests = [0] * 3600 * 10
-            model_returned_requests = [0] * 3600 * 10
-            model_dropped_requests = [0] * 3600 * 10
+            model_received_requests = [0] * int(duration * 1 / sample_interval)
+            model_returned_requests = [0] * int(duration * 1 / sample_interval)
+            model_dropped_requests = [0] * int(duration * 1 / sample_interval)
             requests_start = start[indices]
             requests_finish = finish[indices][tmp_good]
             for i in range(len(requests_start)):
-                start_time = int(requests_start[i] * 10)
+                start_time = int((requests_start[i] - begin_time) * 1 / sample_interval)
                 model_received_requests[start_time] += 1
                 if not tmp_good[i]:
                     model_dropped_requests[start_time] += 1
             for i in range(len(requests_finish)):
-                start_time = int(requests_finish[i] * 10)
-                model_returned_requests[start_time] += 1
-                
+                finish_time = int((requests_finish[i] - begin_time) * 1 / sample_interval)
+                model_returned_requests[finish_time] += 1
 
             stats.append(PerModelStatsResult(
                 name, len(indices), goodput, throughput,

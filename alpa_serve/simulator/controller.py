@@ -340,7 +340,8 @@ def approximate_one_case(case: ServingCase,
 
     if isinstance(placement, ModelPlacement):
         (start, finish, good, model_num_requests, model_num_good_requests,
-         group_num_requests, group_num_good_requests) = approximate_one_case_one_placement(
+         group_num_requests, group_num_good_requests, receive_request_model_ids,
+         replacement_time) = approximate_one_case_one_placement(
              placement, model_names, prof_ress, model_ids, slos, workload.arrivals, enable_batching=enable_batching)
     elif isinstance(placement, ModelPlacementWithReplacement):
         arrivals = workload.arrivals
@@ -407,22 +408,26 @@ def approximate_one_case(case: ServingCase,
     return stats, placement
 
 
-def approximate_one_case_one_placement(placement, model_names, prof_ress, model_ids, slos, arrivals, mixed = True, enable_batching = False):
+def approximate_one_case_one_placement(placement, model_names, prof_ress, model_ids, slos, 
+                                       arrivals, mixed = True, enable_batching = False,
+                                       unique_type2model_ids = None, scheduling_policy = 'load_balance',
+                                       replacement = False):
     # Load constants
     group_configs, group_models = placement.group_configs, placement.group_models
 
     num_groups = len(group_configs)
     num_models = len(model_names)
     num_requests = len(arrivals)
-    # 统计每个模型的数量
+    # num_requests为0/1，代表了这个模型是否放置在集群上
     num_replicas = [0] * num_models
+    # m_id2g_id顾名思义，为每个模型id对应的group id
     m_id2g_id = np.full((num_models, num_groups), -1, dtype=np.int32)
     for g_id, m_ids in enumerate(group_models):
         for m_id in m_ids:
             m_id2g_id[m_id][num_replicas[m_id]] = g_id
             num_replicas[m_id] += 1
 
-    # 统计每个group的模型数量
+    # num_instances为每个group的模型数量
     num_instances = [0] * num_groups
     g_id2m_id = np.full((num_groups, num_models), -1, dtype=np.int32)
     for m_id, g_ids in enumerate(m_id2g_id):
@@ -485,6 +490,7 @@ def approximate_one_case_one_placement(placement, model_names, prof_ress, model_
     finish = np.empty(num_requests, dtype=np.float64)
     good = np.empty(num_requests, dtype=bool)
     tstamps = arrivals
+    replacement_time = None
 
     if mixed:
         if enable_batching:
@@ -494,18 +500,24 @@ def approximate_one_case_one_placement(placement, model_names, prof_ress, model_
                 num_stages, stage_latency, num_requests)
         else:
             (model_num_requests, model_num_good_requests,
-            group_num_requests, group_num_good_requests) = simulate_requests_mixed(
+            group_num_requests, group_num_good_requests, receive_request_model_ids,
+            replacement_time) = simulate_requests_mixed(
                 finish, good, tstamps, model_ids, slos, m_id2g_id,
-                num_stages, stage_latency, num_requests)
+                num_stages, stage_latency, num_requests, 
+                unique_type2model_ids, scheduling_policy,
+                replacement=replacement)
     else:
         (model_num_requests, model_num_good_requests,
          group_num_requests, group_num_good_requests) = simulate_requests(
             finish, good, tstamps, model_ids, slos, m_id2g_id,
             group_max_latency, group_sum_latency, num_requests)
-
+    
+    if unique_type2model_ids is None:
+        receive_request_model_ids = None
     return (start, finish, good,
             model_num_requests, model_num_good_requests,
-            group_num_requests, group_num_good_requests)
+            group_num_requests, group_num_good_requests,
+            receive_request_model_ids, replacement_time)
 
 
 @numba.jit(nopython=True)
@@ -565,9 +577,12 @@ def simulate_requests(finish, good, tstamps, model_ids, slos, m_id2g_id,
 
 @numba.jit(nopython=True)
 def simulate_requests_mixed(finish, good, tstamps, model_ids, slos, m_id2g_id,
-                            num_stages, stage_latency, num_requests):
-    # num_stages: num_groups
-    # stage_latency: num_models * num_groups * max_num_stages
+                            num_stages, stage_latency, num_requests, 
+                            unique_type2model_ids=None, scheduling_policy='load_balance',
+                            replacement=False):
+    # 记录每个请求对应响应模型的id，初始化为-1
+    receive_request_model_ids = np.full(num_requests, -1, dtype=np.int32)
+
     num_models = len(stage_latency)
     num_groups = len(stage_latency[0])
     max_num_stages = len(stage_latency[0][0])
@@ -582,6 +597,13 @@ def simulate_requests_mixed(finish, good, tstamps, model_ids, slos, m_id2g_id,
     tmp_time = np.zeros(max_num_stages, dtype=np.float64)
 
     for i in range(num_requests):
+        # 当最近的100个请求中90%的无法满足SLO时，直接返回，切换placement策略
+        if replacement and i > 100:
+            if np.sum(good[i-100:i]) / 100 < 0.1:
+                return (model_num_requests, model_num_good_requests,
+                        group_num_requests, group_num_good_requests, 
+                        receive_request_model_ids, tstamps[i])
+            
         tstamp, m_id, slo = tstamps[i], model_ids[i], slos[i]
 
         if m_id < 0:
@@ -592,45 +614,133 @@ def simulate_requests_mixed(finish, good, tstamps, model_ids, slos, m_id2g_id,
         model_num_requests[m_id] += 1
 
         # Select group id
-        g_id = -1
-        min_device_clock = inf
-        for j in m_id2g_id[m_id]:
-            if j < 0:
-                break
-            tmp = device_clocks[j][num_stages[j] - 1]
-            if tmp < min_device_clock:
-                min_device_clock = tmp
-                g_id = j
+        if scheduling_policy == 'load_balance':  # 负载均衡策略
+            min_device_clock = inf
+            g_id = -1
+            single_m_id = -1
+            if unique_type2model_ids is None:
+                for j in m_id2g_id[m_id]:
+                    if j < 0:
+                        break
+                    tmp = device_clocks[j][num_stages[j] - 1]
 
-        if g_id < 0:
-            finish[i] = tstamp
-            good[i] = False
-            continue
+                    if tmp < min_device_clock:
+                        min_device_clock = tmp
+                        g_id = j
+            else:
+                # 这是对于一个model_id对应多个group_id的情况
+                for m_id_list in unique_type2model_ids[m_id]:
+                    for j in m_id2g_id[m_id_list]:
+                        if j < 0:
+                            break
+                        tmp = device_clocks[j][num_stages[j] - 1]
+                        # 若一个model_id对应多个group_id，即一类模型在多种模型上放置，这里的目的是找到最早空闲的group！！！
+                        if tmp < min_device_clock:
+                            min_device_clock = tmp
+                            g_id = j
+                            single_m_id = m_id_list
 
-        t = tstamp
-        for k in range(num_stages[g_id]):
-            t = max(t, device_clocks[g_id][k]) + stage_latency[m_id][g_id][k]
-            tmp_time[k] = t
+            if g_id < 0:
+                finish[i] = tstamp
+                good[i] = False
+                continue
 
-        finish_time = t + fixed_overhead
-        group_num_requests[g_id] += 1
-
-        if finish_time - tstamp <= slo:
-            finish[i] = finish_time
-            good[i] = True
+            t = tstamp
             for k in range(num_stages[g_id]):
-                device_clocks[g_id][k] = tmp_time[k]
-            group_num_good_requests[g_id] += 1
-            model_num_good_requests[m_id] += 1
-        else:
-            finish[i] = tstamp
-            good[i] = False
+                t = max(t, device_clocks[g_id][k]) + stage_latency[m_id][g_id][k]
+                tmp_time[k] = t
 
+            finish_time = t + fixed_overhead
+            group_num_requests[g_id] += 1
+
+            if finish_time - tstamp <= slo:
+                finish[i] = finish_time
+                good[i] = True
+                receive_request_model_ids[i] = single_m_id
+                for k in range(num_stages[g_id]):
+                    device_clocks[g_id][k] = tmp_time[k]
+                group_num_good_requests[g_id] += 1
+                model_num_good_requests[m_id] += 1
+            else:
+                finish[i] = tstamp
+                good[i] = False
+    
+        elif scheduling_policy == 'busiest_device':  # 最忙设备策略，且满足SLO
+            max_device_clock = -inf
+            g_id = -1
+            single_m_id = -1
+            if unique_type2model_ids is None:
+                # 遍历所有的 g_id
+                for j in m_id2g_id[m_id]:
+                    if j < 0:
+                        break  # 跳过无效的 g_id
+                    tmp = device_clocks[j][num_stages[j] - 1]
+
+                    # 计算该设备上的请求完成时间
+                    t = tstamp
+                    for k in range(num_stages[j]):
+                        t = max(t, device_clocks[j][k]) + stage_latency[m_id][j][k]
+                    
+                    finish_time = t + fixed_overhead
+
+                    # 如果能满足 SLO，比较是否是目前“最忙”的设备
+                    if finish_time - tstamp <= slo and tmp > max_device_clock:
+                        max_device_clock = tmp
+                        g_id = j
+            else:
+                # 若一个model_id对应多个group_id的情况
+                for m_id_list in unique_type2model_ids[m_id]:
+                    for j in m_id2g_id[m_id_list]:
+                        if j < 0:
+                            break  # 跳过无效的 g_id
+                        tmp = device_clocks[j][num_stages[j] - 1]
+
+                        # 计算该设备上的请求完成时间
+                        t = tstamp
+                        for k in range(num_stages[j]):
+                            t = max(t, device_clocks[j][k]) + stage_latency[m_id][j][k]
+                        
+                        finish_time = t + fixed_overhead
+
+                        # 如果能满足 SLO，比较是否是目前“最忙”的设备
+                        if finish_time - tstamp <= slo and tmp > max_device_clock:
+                            max_device_clock = tmp
+                            g_id = j
+                            single_m_id = m_id_list
+
+            # 如果没有找到合适的设备，直接处理失败的情况
+            if g_id < 0:
+                finish[i] = tstamp
+                good[i] = False
+                continue
+
+            # 更新选中设备的时钟信息
+            t = tstamp
+            for k in range(num_stages[g_id]):
+                t = max(t, device_clocks[g_id][k]) + stage_latency[m_id][g_id][k]
+                tmp_time[k] = t
+
+            finish_time = t + fixed_overhead
+            group_num_requests[g_id] += 1
+
+            # 判断请求是否满足SLO
+            if finish_time - tstamp <= slo:
+                finish[i] = finish_time
+                good[i] = True
+                receive_request_model_ids[i] = single_m_id
+                for k in range(num_stages[g_id]):
+                    device_clocks[g_id][k] = tmp_time[k]
+                group_num_good_requests[g_id] += 1
+                model_num_good_requests[m_id] += 1
+            else:
+                finish[i] = tstamp
+                good[i] = False
     # print("model_num_requests", model_num_requests)
     # print("group_num_requests", group_num_requests)
     # assert np.sum(model_num_requests) == np.sum(group_num_requests)
     return (model_num_requests, model_num_good_requests,
-            group_num_requests, group_num_good_requests)
+            group_num_requests, group_num_good_requests, 
+            receive_request_model_ids, None)
 
 # @numba.jit(nopython=True)
 def simulate_requests_mixed_batching(finish, good, tstamps, model_ids, slos, m_id2g_id, g_id2m_id,

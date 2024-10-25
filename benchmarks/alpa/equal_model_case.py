@@ -72,6 +72,7 @@ def get_equal_model_serving_case(case, prof_database=None):
             cnt = int(1 / cur_rate)
         s = sum(np.array(frac))
         rates = np.array(frac) / s * total_rate
+    # 这里如果为(1,1)，相当于对两个单独的模型请求到达率都一样
     elif isinstance(rate_distribution, (list, tuple, np.ndarray)):
         assert len(rate_distribution) == num_models
         rates = np.array(rate_distribution) / sum(rate_distribution) * total_rate
@@ -248,7 +249,7 @@ _DATA_HEADS = ("exp_name",
                "slo_scale", "duration", "policy_name", "train_start", "train_end", "test_start", "test_end",
                "placement", "goodput", "mode")
 
-def run_one_equal_model_case(case, mode,
+def run_one_equal_model_case(case, mode, duration=None,
                              output_file=None, prof_database=None,
                              relax_slo=False, protocol="http",
                              debug=False,
@@ -256,7 +257,7 @@ def run_one_equal_model_case(case, mode,
                              return_stats_and_placement=False):
     serving_case = get_equal_model_serving_case(case, prof_database)
     if mode == "simulate":
-        stats, placement = approximate_one_case(serving_case, debug=debug, enable_batching=enable_batching)
+        stats, placement = approximate_one_case(serving_case, duration=duration, debug=debug, enable_batching=enable_batching)
     else:
         stats, placement = run_one_case(serving_case, relax_slo=relax_slo,
                                         protocol=protocol, debug=debug)
@@ -276,7 +277,7 @@ def run_one_equal_model_case(case, mode,
     return values
 
 
-def run_equal_model_cases(cases, output_file=None,
+def run_equal_model_cases(cases, output_file=None, duration=None,
                           mode="simulate", relax_slo=False, protocol="http",
                           debug_tstamp=False, parallel=False, enable_batching=False,
                           prof_database=None, return_stats_and_placement=False):
@@ -294,7 +295,7 @@ def run_equal_model_cases(cases, output_file=None,
     for case in cases:
         results.append(run_one_case_(case, mode,
             output_file=output_file, relax_slo=relax_slo,
-            protocol=protocol, debug=debug_tstamp,
+            protocol=protocol, debug=debug_tstamp, duration=duration,
             enable_batching=enable_batching, prof_database=prof_database,
             return_stats_and_placement=return_stats_and_placement))
 

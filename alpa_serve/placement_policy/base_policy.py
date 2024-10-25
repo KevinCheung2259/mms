@@ -19,6 +19,11 @@ from alpa_serve.util import ServingCase, inf, to_str_round
 class ModelPlacement:
     group_configs: List[ParallelConfig]
     group_models: List[List[int]]
+    
+    # 定义初始函数，当传入group_configs和group_models不为空时，返回一个ModelPlacement对象
+    def __init__(self, group_configs: List[ParallelConfig], group_models: List[List[int]]):
+        self.group_configs = group_configs
+        self.group_models = group_models
 
     def add_model(self, group_id: int, model_id: int):
         group_models = list(self.group_models)
@@ -66,6 +71,19 @@ class ModelPlacementWithReplacement:
 
     def __str__(self):
         return f"ModelPlacementWithReplacement(num_segments={len(self.placements)})"
+
+# @dataclasses.dataclass
+# class ModelPlacementWithDynamicReplacement:
+#     start_times: List[float]
+#     placements: List[ModelPlacement]
+#     # replace_times: List[float]
+
+#     def verify(self, model_datas, cluster_env):
+#         for p in self.placements:
+#             p.verify(model_datas, cluster_env)
+
+#     def __str__(self):
+#         return f"ModelPlacementWithDynamicReplacement(num_segments={len(self.placements)})"
 
 
 @dataclasses.dataclass

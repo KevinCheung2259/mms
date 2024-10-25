@@ -399,7 +399,10 @@ class Trace:
         start_timestamp_seconds = start_d * 24 * 60 * 60 + start_h * 60 * 60 + start_m * 60
         end_timestamp_seconds = end_d * 24 * 60 * 60 + end_h * 60 * 60 + end_m * 60
 
-        if self.trace_name == "azure_v1":
+        if self.trace_name == "synthetic":
+            pass
+            
+        elif self.trace_name == "azure_v1":
             # Trace are 1-min histograms
             # 1. Convert function trace to model trace
             model_histogram = OrderedDict()
@@ -555,16 +558,23 @@ class Trace:
 
     def map_model(self, models, function_names, strategy="stripe"):
         mapping = OrderedDict()
+        # 获取所有的模型类别
         n_model = len(models)
         n_function = len(function_names)
+        unique_model_types = np.sort(list(set(['-'.join(m.split('-')[:2]) for m in models])))
+        n_unique_model_type = len(unique_model_types)
         assert n_function >= n_model, f"#function {n_function} < #models {n_model}"
-        if strategy not in ["round_robin", "stripe"]:
+        if strategy not in ["round_robin", "stripe", "specify_model_type_stripe", "specify_model_type_round_robin"]:
             raise NotImplementedError(f"Unimplemented strategy: {strategy}")
         for i, f in enumerate(function_names):
             if strategy == "round_robin":
                 mapping[f] = models[n_model * i // n_function]
-            else:
+            elif strategy == "stripe":
                 mapping[f] = models[i % n_model]
+            elif strategy == "specify_model_type_stripe":
+                mapping[f] = unique_model_types[i % n_unique_model_type]
+            elif strategy == "specify_model_type_round_robin":
+                mapping[f] = unique_model_types[n_unique_model_type * i // n_function]
         return mapping
 
     def estimate_parameters_with_histogram(self,

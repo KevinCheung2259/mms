@@ -44,7 +44,8 @@ def run_case(rate_distribution=(1, 1), cv=1.0, case_id=1, mode="simulate", paral
                                     output_file=None,
                                     mode=mode,
                                     parallel=parallel,
-                                    return_stats_and_placement=True)
+                                    return_stats_and_placement=True,
+                                    duration=duration)
 
     stats = [result[0] for result in results]
     policies_and_stats = (policies, stats)

@@ -2,7 +2,7 @@
 
 from alpa_serve.placement_policy.base_policy import ModelData, ClusterEnv
 from alpa_serve.placement_policy.model_parallelism import (
-    ModelParallelismILP, ModelParallelismRR,
+    ModelParallelismILP, ModelParallelismRR, MyModelParallelismILP, MyModelParallelismILPReplacement, ModelParallelismILPReplacement,
     ModelParallelismGreedy, ModelParallelismSearch,
     ModelParallelismEqual)
 from alpa_serve.placement_policy.selective_replication import (

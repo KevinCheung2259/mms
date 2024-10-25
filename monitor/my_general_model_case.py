@@ -4,33 +4,230 @@ from collections import namedtuple
 import os
 import numpy as np
 import ray
+import time
+from typing import Callable, List, Dict, Optional, Tuple
 
 import sys
 sys.path.append('/home/zhangy/python_project/mms')
 
 from alpa_serve.simulator.controller import (Controller, DummyController,
-    simulate_one_case, approximate_one_case)
-from alpa_serve.simulator.workload import Workload, GammaProcess, UniformMMPP
+    approximate_one_case_one_placement)
+from alpa_serve.simulator.workload import (Workload, GammaProcess, UniformMMPP, DEFAULT_WARMUP, 
+                                           StatsResult, PerModelStatsResult)
 from alpa_serve.profiling import ProfilingDatabase, ParallelConfig
 from alpa_serve.placement_policy import (ClusterEnv, ModelData,
     SelectiveReplicationILP, SelectiveReplicationGreedy,
     SelectiveReplicationReplacement, SelectiveReplicationUniform,
     ModelParallelismILP, ModelParallelismGreedy, ModelParallelismRR,
-    ModelParallelismSearch)
+    ModelParallelismSearch, MyModelParallelismILP, MyModelParallelismILPReplacement, ModelParallelismILPReplacement)
 from alpa_serve.profiling import ProfilingDatabase
 from alpa_serve.trace import Trace, report_group_stats
-from alpa_serve.util import GB, write_tsv, ServingCase
+from alpa_serve.util import GB, write_tsv, ServingCase, inf, eps
 from collections import OrderedDict
 from alpa_serve.trace import Trace, TraceReplay
 from benchmarks.alpa.util import get_model_def
 from benchmarks.alpa.run_one_case import run_one_case
 from osdi23_artifact.general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
-
+from alpa_serve.placement_policy.base_policy import ModelPlacement
 
 GeneralModelCase = namedtuple("GeneralModelCase", [
     "exp_name", "num_devices", "mem_budget", "model_types", "model_names",
     "total_rate", "rate_distribution", "arrival_process", "arrival_process_kwargs",
     "slo_scale", "duration", "policy_name"])
+
+def approximate_one_case(case: ServingCase,
+                         duration: int = 3600,
+                         seed: int = 0,
+                         warmup: int = DEFAULT_WARMUP,
+                         debug: bool = False,
+                         fast_stats: bool = False,
+                         enable_batching: bool = False,
+                         placement: Optional[ModelPlacement] = None,
+                         model_mapping_strategy: Optional[str] = None,
+                         scheduling_policy: Optional[str] = 'load_balance',
+                         dynamic_placement: Optional[bool] = False) -> Tuple[StatsResult, ModelPlacement]:
+    """A fast simulator that only simulates one stage for a pipeline."""
+    from alpa_serve.placement_policy.base_policy import (
+        ModelPlacement, ModelPlacementWithReplacement)
+
+    tic = time.time()
+    register_models, generate_workload, place_models = case
+
+    workload = generate_workload()
+
+    if workload.enable_simulator_cache and workload.cached_data:
+        model_ids, slos, model_names, prof_ress = workload.cached_data
+        placement = place_models(None)
+    else:
+        # Launch the controller
+        controller = DummyController()
+        register_models(controller)
+        if placement:
+            placement = place_models(controller, placement=placement)
+        else:
+            placement = place_models(controller)
+        # Note: assume the model registration order is the same as the model id order in group_models
+        model_names, prof_ress = zip(*controller.name2profiling.items())
+        unique_model_types = np.sort(list(set(["-".join(m.split("-")[:3]) for m in model_names])))
+        unique_model_types = list(unique_model_types)
+
+        name2model_id = {m: i for i, m in enumerate(model_names)}
+        unique_type2model_ids = None
+
+        model_ids = np.array([name2model_id.get(r.model_name, -1) for r in workload.requests], dtype=np.int32)
+        slos = np.array([r.slo for r in workload.requests], dtype=np.float32)
+
+        if workload.enable_simulator_cache:
+            workload.cached_data = (model_ids, slos, model_names, prof_ress)
+
+    if isinstance(placement, ModelPlacement):
+        if dynamic_placement == False:
+            (start, finish, good, 
+            model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
+            receive_request_model_ids, _) = approximate_one_case_one_placement(
+                placement, model_names, prof_ress, model_ids, slos, workload.arrivals, 
+                enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
+                scheduling_policy=scheduling_policy)
+        else:
+            arrivals = workload.arrivals
+            start_time = 0
+            start_i = 0
+            pt = 0
+            start_list, finish_list, good_list = [], [], []
+            model_num_requests_list, model_num_good_requests_list = [], []
+            group_num_requests_list, group_num_good_requests_list = [], []
+            placement_list = [placement]
+            change_time = [0]
+
+            for i in range(len(arrivals)):
+                if arrivals[i] > start_time:
+                    (start, finish, good, 
+                    model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
+                    receive_request_model_ids, replacement_time) = approximate_one_case_one_placement(
+                        placement, model_names, prof_ress, 
+                        model_ids[start_i:], slos[start_i:], workload.arrivals[start_i:], 
+                        enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
+                        scheduling_policy=scheduling_policy, replacement=True)
+
+                    start_list.append(start)
+                    finish_list.append(finish)
+                    good_list.append(good)
+                    group_num_requests_list.append(group_num_requests)
+                    group_num_good_requests_list.append(group_num_good_requests)
+                    model_num_requests_list.append(model_num_requests)
+                    model_num_good_requests_list.append(model_num_good_requests)
+
+                    if replacement_time is None:
+                        break
+                    new_placement = place_models(controller, replacement_time=replacement_time)
+                    placement_list.append(new_placement)
+                    placement = new_placement
+                    start_i = np.where(arrivals == replacement_time)[0][0]
+                    start_time = replacement_time
+                    change_time.append(start_time)
+                    pt += 1
+            
+            start = np.concatenate(start_list)
+            finish = np.concatenate(finish_list)
+            good = np.concatenate(good_list)
+            try:
+                group_num_requests = np.sum(group_num_requests_list, axis=0)
+                group_num_good_requests = np.sum(group_num_good_requests_list, axis=0)
+            except:  # 若每个时间段的分组数量不一样，不能直接合并
+                group_num_requests = [item for sublist in group_num_requests_list for item in sublist]
+                group_num_good_requests = [item for sublist in group_num_good_requests_list for item in sublist]
+            model_num_requests = np.sum(model_num_requests_list, axis=0)
+            model_num_good_requests = np.sum(model_num_good_requests_list, axis=0)
+            # 打印每个阶段的placement
+            for i in range(len(placement_list)):
+                print(f"start_time: {change_time[i]}, placement {i}: {placement_list[i]}")
+
+    elif isinstance(placement, ModelPlacementWithReplacement):
+        arrivals = workload.arrivals
+        change_times = placement.start_times[1:] + [inf]
+
+        start_list, finish_list, good_list = [], [], []
+        model_num_requests_list, model_num_good_requests_list = [], []
+        group_num_requests_list, group_num_good_requests_list = [], []
+
+        start_i = 0
+        pt = 0
+
+        for i in range(len(arrivals)):
+            if arrivals[i] > change_times[pt]:
+                (start, finish, good, 
+                 model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests, 
+                 receive_request_model_ids, _) = approximate_one_case_one_placement(
+                     placement.placements[pt], model_names, prof_ress,
+                     model_ids[start_i:i], slos[start_i:i], arrivals[start_i:i], enable_batching=enable_batching)
+                start_list.append(start)
+                finish_list.append(finish)
+                good_list.append(good)
+                group_num_requests_list.append(group_num_requests)
+                group_num_good_requests_list.append(group_num_good_requests)
+                model_num_requests_list.append(model_num_requests)
+                model_num_good_requests_list.append(model_num_good_requests)
+
+                start_i = i
+                pt += 1
+
+        (start, finish, good, 
+         model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
+         receive_request_model_ids, _) = approximate_one_case_one_placement(
+             placement.placements[pt], model_names, prof_ress,
+             model_ids[start_i:], slos[start_i:], arrivals[start_i:], enable_batching=enable_batching)
+        start_list.append(start)
+        finish_list.append(finish)
+        good_list.append(good)
+        group_num_requests_list.append(group_num_requests)
+        group_num_good_requests_list.append(group_num_good_requests)
+        model_num_requests_list.append(model_num_requests)
+        model_num_good_requests_list.append(model_num_good_requests)
+
+        start = np.concatenate(start_list)
+        finish = np.concatenate(finish_list)
+        good = np.concatenate(good_list)
+        try:
+            group_num_requests = np.sum(group_num_requests_list, axis=0)
+            group_num_good_requests = np.sum(group_num_good_requests_list, axis=0)
+        except:  # 若每个时间段的分组数量不一样，不能直接合并
+            group_num_requests = [item for sublist in group_num_requests_list for item in sublist]
+            group_num_good_requests = [item for sublist in group_num_good_requests_list for item in sublist]
+        model_num_requests = np.sum(model_num_requests_list, axis=0)
+        model_num_good_requests = np.sum(model_num_good_requests_list, axis=0)
+        # 打印每个阶段的placement
+        for i in range(len(placement.placements)):
+            print(f"placement {i}: {placement.placements[i]}")
+
+    if fast_stats:
+        # Note: no warmup
+        interval = start[-1] - start[0]
+        per_model_stats = [PerModelStatsResult(
+            model_names[i], model_num_requests[i],
+            model_num_good_requests[i] / (model_num_requests[i] + eps),
+            model_num_requests[i] / interval,
+            0, 0, 0, 0, [], [], [], [], [], [], []) for i in range(len(model_names))]
+        stats = StatsResult(per_model_stats, tuple(group_num_requests),
+                            np.mean(good), np.mean(finish - start),
+                            len(start), len(start) / interval)
+    else:
+        if receive_request_model_ids is not None:
+            receive_request_model = set([m for m in receive_request_model_ids if m >= 0])
+            print("receive_request_model_num: ", len(list(receive_request_model)))
+            # 打印每个模型的goodput, 保留三位小数
+            for i in range(len(unique_model_types)):
+                model_type = unique_model_types[i]
+                model_goodput = model_num_good_requests[i] / (model_num_requests[i])
+                print(f"model_type: {model_type}, goodput: {round(model_goodput, 3)}")
+            stats = workload.compute_stats(start=start, finish=finish, good=good, warmup=warmup, 
+                                        receive_request_model_ids=receive_request_model_ids, 
+                                        unique_model_types=unique_model_types,
+                                        model_names=model_names, duration=duration)
+        else:
+            stats = workload.compute_stats(start=start, finish=finish, good=good, warmup=warmup, duration=duration)
+        stats.group_num_requests = tuple(group_num_requests)
+    
+    return stats, placement
 
 
 def get_general_model_serving_case(case, prof_database=None):
@@ -42,7 +239,7 @@ def get_general_model_serving_case(case, prof_database=None):
      total_rate, rate_distribution, arrival_process, arrival_process_kwargs,
      slo_scale, duration, policy_name) = case
 
-    cluster_env = ClusterEnv(num_devices=num_devices, mem_budget=mem_budget)
+    cluster_env = ClusterEnv(num_devices=num_devices, mem_budget=mem_budget, num_devices_per_node=2)
     assert len(model_names) == len(model_types)
     num_models = len(model_names)
     single_latency = {
@@ -70,10 +267,12 @@ def get_general_model_serving_case(case, prof_database=None):
         base_rate = 0.2  # 其他时间的基础请求率
         interval_seconds = arrival_process_kwargs.get("interval_seconds", 600)
         for i in range(num_models):
+            np.random.seed(seed)
             # 设置波峰的时间段（例如：100-200秒和300-400秒）
             num_intervals = duration // interval_seconds
             # 随机选择波峰的时间段
             peak_times = np.random.choice(num_intervals, 2, replace=False)
+            seed += 1
             distribution = []
             for t in range(duration // interval_seconds):
                 if t in peak_times:
@@ -225,7 +424,7 @@ def get_general_model_serving_case(case, prof_database=None):
             #                                                 duration, slo=slos[i], seed=i)
         return w
 
-    def place_models(controller):
+    def place_models(controller, placement=None, replacement_time=0):
         num_models = len(model_names)
         model_datas = []
         for i in range(num_models):
@@ -240,8 +439,19 @@ def get_general_model_serving_case(case, prof_database=None):
             interval = int(policy_name.split("-")[2])
             policy = SelectiveReplicationReplacement(verbose=1,
                  replacement_interval=interval)
+        elif "my-mp-ilp-replace" in policy_name:
+            interval = int(policy_name.split("-")[-1])
+            policy = MyModelParallelismILPReplacement(verbose=2, replacement_interval=interval)
+        elif policy_name == "my-mp-ilp-dynamic":
+            policy = MyModelParallelismILPReplacement(verbose=2, dynamic_replacement=True,
+                                                      replacement_time=replacement_time)
+        elif "mp-ilp-replace" in policy_name:
+            interval = int(policy_name.split("-")[-1])
+            policy = ModelParallelismILPReplacement(verbose=2, replacement_interval=interval)
         elif policy_name == "mp-ilp":
             policy = ModelParallelismILP(verbose=1)
+        elif policy_name == "my-mp-ilp":
+            policy = MyModelParallelismILP(verbose=2)
         elif policy_name == "mp-round-robin":
             policy = ModelParallelismRR(verbose=0)
         elif policy_name in ["mp-search", "mp-search-evo", "mp-search-sep"]:
@@ -260,10 +470,15 @@ def get_general_model_serving_case(case, prof_database=None):
         else:
             raise ValueError(f"Invalid placement policy: {policy_name}")
 
-        if "azure" in arrival_process:
-            placement = policy.place_models(controller, cluster_env, model_datas, train_workload)
+        if placement is not None:
+            policy.place_models_impl(controller, cluster_env, model_datas, placement)
         else:
-            placement = policy.place_models(controller, cluster_env, model_datas)
+            if "azure" in arrival_process:
+                placement = policy.place_models(controller, cluster_env, model_datas, train_workload)
+            elif "gamma" in arrival_process:
+                placement = policy.place_models(controller, cluster_env, model_datas, train_workload)
+            else:
+                placement = policy.place_models(controller, cluster_env, model_datas)
 
         return placement
 
@@ -275,23 +490,17 @@ _DATA_HEADS = ("exp_name", "num_models",
                "arrival_process", "arrival_process_kwargs", "slo_scale", "duration",
                "policy_name", "placement", "goodput", "mode")
 
-_SINGLE_MODEL_DATA_HEADS = ("exp_name", "num_models",
-               "num_devices", "mem_budget", "total_rate", "rate_distribution",
-               "arrival_process", "arrival_process_kwargs", "slo_scale", "duration",
-               "policy_name", "placement", "goodput", "mode", 
-               "model_name", "num_requests", "goodput", "throughput", "avg_latency", 
-               "latency_std", "latency_p90", "latency_p99") 
-
-_SINGLE_MODEL_DATA_HEADS_DETAIL_TIME_WINDOW = (
-               "model_name", "model_is_running", "model_received_requests", "model_returned_requests", "model_dropped_requests")
-
-def run_one_general_model_case(case, mode,
-                               output_file=None, prof_database=None,
-                               debug=False):
+def run_one_general_model_case(case, mode, output_file=None, prof_database=None,
+                               debug=False, monitor_kwargs=None):
     serving_case = get_general_model_serving_case(case, prof_database)
+    if "dynamic" in case.policy_name:
+        dynamic_placement = True
+    else :
+        dynamic_placement = False
 
     if mode == "simulate":
-        stats, placement = approximate_one_case(serving_case, debug=debug)
+        stats, placement = approximate_one_case(serving_case, debug=debug, 
+                                                dynamic_placement=dynamic_placement)
     else:
         stats, placement = run_one_case(serving_case, debug=debug)
 
@@ -312,29 +521,20 @@ def run_one_general_model_case(case, mode,
     if output_file is not None:
         write_tsv(_DATA_HEADS, values, output_file)
 
-    # 打印每个模型在每个时间窗口的运行情况，并写入tsv文件中
-    output_file_single_model = f"{output_file.split('.')[0]}_single_model.tsv"
-    for model_stats in stats.per_model_stats:
-        values = (exp_name, len(model_types)) + case_info + res + (model_stats.name, 
-                model_stats.num_requests, model_stats.goodput, model_stats.throughput, model_stats.latency_mean, 
-                model_stats.latency_std, model_stats.latency_p90, model_stats.latency_p99)
-
-        # 将每个模型在每个时间窗口的运行情况写入csv文件中
-        write_tsv(_SINGLE_MODEL_DATA_HEADS, values, output_file_single_model, print_line=False)
+    if monitor_kwargs.get("monitor", False):
+        # placement = ModelPlacement(group_configs=(ParallelConfig(dp=1, op=1, pp=2), ParallelConfig(dp=1, op=1, pp=2)), group_models=((0, 2, 5, 8), (1, 3, 4, 9, 11)))
+        from monitor import run_monitor_one_general_model_case
+        monitor_kwargs["output_file"] = output_file
+        run_monitor_one_general_model_case(case, serving_case, mode, placement=placement, monitor_kwargs=monitor_kwargs)
+        # approximate_one_case(serving_case, debug=debug, duration=duration, 
+        #                     placement=placement, model_mapping_strategy=model_mapping_strategy,
+        #                     scheduling_policy=scheduling_policy)
     
-    # 将每个模型的"model_is_running", "model_received_requests", "model_returned_requests", "model_dropped_requests"写入tsv文件
-    output_file_single_model_dir = output_file_single_model.split('.')[0] + "_dir"
-    os.makedirs(output_file_single_model_dir, exist_ok=True)
-    for model_stats in stats.per_model_stats:
-        output_file_single_model_detail = os.path.join(output_file_single_model_dir, f"{model_stats.name}.tsv")
-        for i in range(len(model_stats.model_is_running)):
-            detail_values = (model_stats.name, model_stats.model_is_running[i], model_stats.model_received_requests[i], model_stats.model_returned_requests[i], model_stats.model_dropped_requests[i])
-            write_tsv(_SINGLE_MODEL_DATA_HEADS_DETAIL_TIME_WINDOW, detail_values, output_file_single_model_detail, print_line=False)
-
     return values
 
 def run_general_model_cases(cases, output_file=None,
-                            mode="simulate", debug_tstamp=False, parallel=False):
+                            mode="simulate", debug_tstamp=False, parallel=False, 
+                            monitor_kwargs=None):
     if not ray.is_initialized():
         ray.init(address="auto", runtime_env={"working_dir": os.getcwd(), "excludes": ["backup"]})
 
@@ -346,45 +546,13 @@ def run_general_model_cases(cases, output_file=None,
     results = []
     for case in cases:
         results.append(run_one_case_(case, mode,
-            output_file=output_file, debug=debug_tstamp))
+            output_file=output_file, debug=debug_tstamp, monitor_kwargs=monitor_kwargs))
 
     if parallel:
         results = ray.get(results)
 
     return results
 
-
-def read_general_model_case_tsv(filename):
-    rows = []  # List[dict]
-
-    for line in open(filename):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        (exp_name, num_models,
-         num_devices, mem_budget,
-         total_rate, rate_distribution,
-         arrival_process, arrival_process_kwargs,
-         slo_scale, duration, policy_name,
-         placement, goodput, mode) = line.split("\t")
-
-        num_devices = int(num_devices)
-        num_models = int(num_models)
-        total_rate = float(total_rate)
-        arrival_process_kwargs = eval(arrival_process_kwargs)
-        slo_scale = float(slo_scale)
-        duration = float(duration)
-        goodput = float(goodput)
-
-        values = locals()
-        row = {
-            key: values[key]
-            for key in _DATA_HEADS
-        }
-        rows.append(row)
-
-    return rows
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -420,9 +588,28 @@ if __name__ == "__main__":
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--ablation", action="store_true")
     parser.add_argument("--large-models", action="store_true")
-
+    '''
+    监控设置
+    '''
+    parser.add_argument("--monitor", action="store_true", default=False)
+    parser.add_argument("--model_mapping_strategy", type=str,
+                        choices=["stripe", "round_robin", "specify_model_type_stripe", "specify_model_type_round_robin"],
+                        default="stripe")
+    parser.add_argument("--scheduling_policy", type=str, default="load_balance",
+                        choices=["load_balance", "busiest_device"])
+    parser.add_argument("--detail", type=str, default=True, 
+                        help="Whether to output complete cluster operation process data")
+    parser.add_argument("--plot_single_save_path", type=str, help="输出单个模型的图片保存路径",
+                        default="monitor/monitor_exp_instance_busiest_device/plot_res_monitor_general_model_cases_single_model")
+    parser.add_argument("--plot_cluster_save_path", type=str, help="输出集群的图片保存路径",
+                        default="monitor/monitor_exp_instance_busiest_device")
+    
     args = parser.parse_args()
 
+    monitor_kwargs = {"monitor": args.monitor, "duration": args.duration, 
+                    "model_mapping_strategy": args.model_mapping_strategy, 
+                    "scheduling_policy": args.scheduling_policy,
+                    "detail": args.detail}
     # choices: {"sr-greedy", "sr-ilp", "mp-ilp",
     #           "mp-round-robin", "mp-greedy-2", "mp-greedy-8", "mp-search", "mp-search-sep"}
     if args.policy:
@@ -445,7 +632,7 @@ if __name__ == "__main__":
         model_set = ["bert-6.7b", "bert-2.6b", "bert-1.3b"]
     elif args.model_type == "synthetic":
         model_set = ["bert-6.7b", "moe-5.3b", "bert-2.6b", "moe-2.4b", "bert-1.3b", "moe-1.3b",
-                     "bert-6.7b-a", "moe-5.3b-a", "bert-2.6b-a", "moe-2.4b-a", "bert-1.3b-a", "moe-1.3b-a"]
+                    "bert-6.7b-a", "moe-5.3b-a", "bert-2.6b-a", "moe-2.4b-a", "bert-1.3b-a", "moe-1.3b-a"]
                     #  "bert-6.7b-b", "moe-5.3b-b", "bert-2.6b-b", "moe-2.4b-b", "bert-1.3b-b", "moe-1.3b-b",
                     #  "bert-6.7b-c", "moe-5.3b-c", "bert-2.6b-c", "moe-2.4b-c", "bert-1.3b-c", "moe-1.3b-c"]
     
@@ -504,10 +691,15 @@ if __name__ == "__main__":
     else:
         output_file_name = args.output + ".tsv"
 
+    # 回到当前文件所在的文件夹
+    # current_dir = os.path.dirname(os.path.realpath(__file__))  # 获取当前文件的目录
+    # os.chdir(current_dir)  # 切换到当前文件所在的目录
+
     if args.exp_name:
-        os.makedirs(args.exp_name, exist_ok=True)
+        exp_name = os.path.join(os.path.dirname(os.path.realpath(__file__)), args.exp_name)
+        os.makedirs(exp_name, exist_ok=True)
         output_file = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                                   args.exp_name, output_file_name)
+                                   exp_name, output_file_name)
     else:
         output_folder = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
         os.makedirs(output_folder, exist_ok=True)
@@ -528,7 +720,7 @@ if __name__ == "__main__":
 
     cases = []
 
-    num_devices_list = [16]
+    num_devices_list = [4]
 
     print("打印配置信息")
     print("workload: ", args.workload)
@@ -654,4 +846,5 @@ if __name__ == "__main__":
         end_case = (i + 1) * n_case_each_run  if (i + 1) * n_case_each_run < n_cases else n_cases
         run_general_model_cases(cases[start_case:end_case],
                                 output_file=output_file,
-                                mode=args.mode, parallel=args.parallel)
+                                mode=args.mode, parallel=args.parallel,
+                                monitor_kwargs=monitor_kwargs)

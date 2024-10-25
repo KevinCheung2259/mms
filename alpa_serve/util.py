@@ -4,9 +4,10 @@ import functools
 import logging
 import math
 from typing import Sequence, Any
-
+import os
 import ray
 import numpy as np
+from itertools import product, chain
 
 # global switch for batching
 # enable_batching = True
@@ -61,8 +62,14 @@ def write_tsv(heads: Sequence[str],
 
     values = [str(x) for x in values]
 
+    # 检查文件是否存在，如果不存在则创建文件
+    file_exists = os.path.isfile(filename)
+    if not file_exists:
+        with open(filename , "w", encoding="utf-8") as fout:
+            pass
+        print("Create file: ", filename)
     with open(filename, "a", encoding="utf-8") as fout:
-        fout.write("\t".join(values) + "\n")
+        fout.write("\t".join(values) + "\n") 
 
     if print_line:
         line = ""
@@ -72,6 +79,9 @@ def write_tsv(heads: Sequence[str],
 
 
 def get_factors(n: int):
+    '''
+    Get all factors of n.
+    '''
     step = 2 if n % 2 else 1
     ret = list(
         set(
@@ -160,9 +170,50 @@ def decompose2tok(n: int):
         n = n // 2
     return ret
 
+def generate_device_combinations(n):
+    def backtrack(start, current_combination):
+        # 如果当前组合的总数等于节点设备数，保存组合
+        if sum(current_combination) == n:
+            combinations.add(tuple(sorted(current_combination)))  # 使用排序的元组去重
+            return
+        
+        # 遍历可能的设备大小（2的幂）
+        for size in powers_of_two:
+            # 确保当前组合的总数不会超过节点的设备数
+            if sum(current_combination) + size <= n:
+                current_combination.append(size)
+                backtrack(start, current_combination)
+                current_combination.pop()
+
+    powers_of_two = [2 ** i for i in range(int(n).bit_length()) if 2 ** i <= n]
+    combinations = set()  # 使用集合去重
+    backtrack(0, [])
+    
+    return list(map(list, combinations))  # 转换回列表形式
+
+def all_node_combinations(node_counts):
+    all_combinations = []
+    for count in node_counts:
+        combinations = generate_device_combinations(count)
+        all_combinations.append(combinations)
+    
+    # 计算所有节点的笛卡尔积
+    cartesian_product = product(*all_combinations)
+    
+    # 将每个组合的子列表合并为一个列表
+    merged_combinations = [sum(combo, []) for combo in cartesian_product]
+    
+    return merged_combinations
 
 if __name__ == "__main__":
-    print(get_partitions(64, 6))
+    # print(get_partitions(64, 6))
     print(len(get_partitions(64, 6)))
     print(get2tok(34))
     print(decompose2tok(13))
+    print(generate_device_combinations(8))
+    node_device_counts = [4, 6]  # 节点设备数为4和6
+    all_combinations = all_node_combinations(node_device_counts)
+
+    for idx, combo in enumerate(all_combinations):
+        print(f"Combination {idx + 1}: {combo}")
+

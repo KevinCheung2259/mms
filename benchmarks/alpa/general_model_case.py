@@ -1,6 +1,6 @@
 from collections import namedtuple
 import os
-
+import numpy as np
 import ray
 
 from alpa_serve.simulator.controller import (Controller, DummyController,
@@ -12,6 +12,7 @@ from alpa_serve.placement_policy import (ClusterEnv, ModelData,
     SelectiveReplicationReplacement, SelectiveReplicationUniform,
     ModelParallelismILP, ModelParallelismGreedy, ModelParallelismRR,
     ModelParallelismSearch)
+from alpa_serve.placement_policy.base_policy import ModelPlacement, BasePlacementPolicy
 from alpa_serve.profiling import ProfilingDatabase
 from alpa_serve.trace import Trace, report_group_stats
 from alpa_serve.util import GB, write_tsv, ServingCase
@@ -26,7 +27,7 @@ GeneralModelCase = namedtuple("GeneralModelCase", [
     "slo_scale", "duration", "policy_name"])
 
 
-def get_general_model_serving_case(case, prof_database=None):
+def get_general_model_serving_case(case, prof_database=None, model_mapping_strategy="stripe"):
     assert isinstance(case, GeneralModelCase), "not GeneralModelCase"
     if prof_database is None:
         prof_database = ProfilingDatabase("/home/zhangy/python_project/mms/alpa_serve/profiling_result.pkl")
@@ -41,7 +42,6 @@ def get_general_model_serving_case(case, prof_database=None):
     single_latency = {
         model_type: sum(prof_database.get(model_type).para_dict[ParallelConfig(1,1,1)
         ].latency[1]) for model_type in set(model_types)}
-    slos = [single_latency[model_type] * slo_scale for model_type in model_types]
 
     if rate_distribution == "uniform":
         rates = [total_rate / num_models] * num_models
@@ -103,7 +103,7 @@ def get_general_model_serving_case(case, prof_database=None):
         azure_v1_trace_dir = arrival_process_kwargs["trace_dir"]
         azure_v1_trace = Trace("azure_v1", azure_v1_trace_dir)
         train_replays = azure_v1_trace.replay(model_names,
-                                              model_mapping_strategy="stripe",
+                                              model_mapping_strategy=model_mapping_strategy,
                                               arrival_distribution="gamma",
                                               start_time="0.0.0",
                                               end_time="0.1.0",
@@ -111,7 +111,7 @@ def get_general_model_serving_case(case, prof_database=None):
                                               rate_scale_factor=arrival_process_kwargs["rate_scale"],
                                               cv_scale_factor=arrival_process_kwargs["cv_scale"])
         test_replays = azure_v1_trace.replay(model_names,
-                                              model_mapping_strategy="stripe",
+                                              model_mapping_strategy=model_mapping_strategy,
                                               arrival_distribution="gamma",
                                               start_time="0.0.0",
                                               end_time="0.1.0",
@@ -120,14 +120,24 @@ def get_general_model_serving_case(case, prof_database=None):
                                               cv_scale_factor=arrival_process_kwargs["cv_scale"])
         del azure_v1_trace
         ws = []
-        for model_name, slo in zip(model_names, slos):
-            ws.append(train_replays[model_name].to_workload(slo))
+        slos = [single_latency[model_type] * slo_scale for model_type in model_types]
+        if "specify_model" in model_mapping_strategy:
+            unique_model_types = np.sort(list(set(model_types)))
+            unique_model_types_slos = [single_latency[model_type] * slo_scale for model_type in unique_model_types]
+            for model_type_name, slo in zip(unique_model_types, unique_model_types_slos):
+                ws.append(train_replays[model_type_name].to_workload(slo))
+        else:
+            for model_name, slo in zip(model_names, slos):
+                ws.append(train_replays[model_name].to_workload(slo))
         train_workload = Workload.merge(*ws)
         # for debugging:
         for m in test_replays:
             test_replays[m].report_stats()
         report_group_stats(list(test_replays.values()))
-        arrival_processes = [test_replays[model_name] for model_name in model_names]
+        if "specify_model" in model_mapping_strategy:
+            arrival_processes = [test_replays[model_type] for model_type in set(model_types)]
+        else:
+            arrival_processes = [test_replays[model_name] for model_name in model_names]
     else:
         raise ValueError("Invalid arrival process: {arrival_process}")
 
@@ -144,21 +154,31 @@ def get_general_model_serving_case(case, prof_database=None):
 
     def generate_workload(start=0):
         w = Workload.empty()
-        for i in range(num_models):
+        if "specify_model" in model_mapping_strategy:
+            num_models_to_generate = len(set(model_types))
+            slos_generate = unique_model_types_slos
+        else:
+            num_models_to_generate = len(model_names)
+            slos_generate = slos
+        for i in range(num_models_to_generate):
             if "azure" in arrival_process:
-                w += arrival_processes[i].to_workload(slos[i])
+                w += arrival_processes[i].to_workload(slos_generate[i])
             else:
                 w += arrival_processes[i].generate_workload(model_names[i], start,
-                                                            duration, slo=slos[i], seed=i)
+                                                            duration, slo=slos_generate[i], seed=i)
         return w
 
-    def place_models(controller):
+    def place_models(controller, placement = None):
         num_models = len(model_names)
         model_datas = []
-        for i in range(num_models):
-            model_datas.append(ModelData(model_names[i], slos[i], rates[i], cvs[i],
-                                         prof_database.get(model_types[i])))
-
+        if "specify_model" in model_mapping_strategy:
+            for i in range(num_models):
+                model_datas.append(ModelData(model_names[i], slos[i], -1.0, -1.0,
+                                            prof_database.get(model_types[i])))
+        else:
+            for i in range(num_models):
+                model_datas.append(ModelData(model_names[i], slos[i], rates[i], cvs[i],
+                                            prof_database.get(model_types[i])))
         if policy_name == "sr-ilp":
             policy = SelectiveReplicationILP(verbose=1)
         elif policy_name == "sr-greedy":
@@ -187,10 +207,13 @@ def get_general_model_serving_case(case, prof_database=None):
         else:
             raise ValueError(f"Invalid placement policy: {policy_name}")
 
-        if "azure" in arrival_process:
-            placement = policy.place_models(controller, cluster_env, model_datas, train_workload)
+        if placement is not None:
+            policy.place_models_impl(controller, cluster_env, model_datas, placement)
         else:
-            placement = policy.place_models(controller, cluster_env, model_datas)
+            if "azure" in arrival_process:
+                placement = policy.place_models(controller, cluster_env, model_datas, train_workload)
+            else:
+                placement = policy.place_models(controller, cluster_env, model_datas)
 
         return placement
 
