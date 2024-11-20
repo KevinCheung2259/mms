@@ -4,6 +4,9 @@ import os
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
+from request_inspect import draw_plot
+import pandas as pd
+from util import smooth_list
 
 def read_file(file_path):
     '''
@@ -108,6 +111,49 @@ def plot_model_types_goodput_vs_arrival_rate(mixed_single_model_dict, plot_save_
     plt.savefig(plot_save_path + '/model_types_goodput_vs_arrival_rate.png')
     plt.close()
     print('图表已保存至', plot_save_path + '/model_types_goodput_vs_arrival_rate.png')
+
+
+# def plot_single_model_goodput(single_model_dir_path, plot_save_path):
+#     # 获取文件夹中的所有文件
+#     files = [f for f in os.listdir(single_model_dir_path) if f.endswith('.tsv')]
+#     model_names = [f[:-4] for f in files]
+#     model_names = np.sort(model_names)
+#     num_models = len(files)
+#     fig, axs = plt.subplots(nrows=(num_models + 1) // 2, ncols=2, figsize=(14, 10))
+#     axs = axs.flatten()  # 将子图数组展平，方便迭代访问
+
+#     for i in range(num_models):
+#         # 模型名称为文件名
+#         model_name = model_names[i]
+#         file_name = model_name + '.tsv'
+
+#         full_path = os.path.join(single_model_dir_path, file_name)
+#         df = pd.read_csv(full_path, sep='\t')
+
+#         model_goodput = list(df['model_goodput'])
+#         # # 对于model_queue，每60个数据点求和
+#         # model_goodput = smooth_list(model_goodput, interval=60)
+
+#         # 绘制到对应子图
+#         axs[i].plot(model_goodput, label=f"{model_name} goodput")
+#         axs[i].set_title(f"{model_name} goodput per second")
+#         axs[i].set_ylabel("#goodput")
+#         axs[i].set_xlabel("time (second)")
+#         axs[i].legend()
+
+#     # 移除多余的空白子图
+#     for j in range(i + 1, len(axs)):
+#         fig.delaxes(axs[j])
+
+#     # 调整布局并显示图表
+#     plt.tight_layout()
+    
+#     # 保存图表到为pdf
+#     plt.savefig(plot_save_path + '/' + 'model_goodput.pdf')
+#     print(f"图表已保存至 {plot_save_path}/model_goodput.pdf")
+#     plt.close()
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser() 

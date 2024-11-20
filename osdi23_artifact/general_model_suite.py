@@ -68,8 +68,8 @@ azure_v1_suite = {
         slo_scales =[0.75, 1, 2, 3, 4, 5, 7.5, 10],
         rate_list = [],
         cv_list = [],
-        rate_scales = [5e-4, 1e-3, 2e-3, 4e-3, 5e-3, 6e-3, 7e-3, 8e-3],
-        cv_scales = [1, 2, 3, 4, 5, 6, 8],
+        rate_scales = [1e-4, 3e-4, 5e-4, 1e-3, 2e-3, 4e-3, 5e-3, 6e-3, 7e-3],
+        cv_scales = [1, 3, 5, 7, 9, 11, 13, 15],
     ),
 }
 
@@ -92,7 +92,7 @@ azure_v2_suite = {
         fixed_num_devices = 48,
         fixed_num_modelset = 12,
         fixed_slo_scale = 5,
-        fixed_rate_scale = 32,
+        fixed_rate_scale = 15,  # 32
         fixed_cv_scale = 1,
         num_devices_list = [16, 24, 32, 40, 48, 54, 64],
         num_modelset_list =  [8, 12, 16, 18, 20, 22],
@@ -100,6 +100,6 @@ azure_v2_suite = {
         rate_list = [],
         cv_list = [],
         rate_scales = [1, 4, 8, 16, 32, 64],
-        cv_scales = [1, 2, 3, 4, 6, 8],
+        cv_scales = [1, 3, 5, 7, 9, 11, 13, 15],
     ),
 }

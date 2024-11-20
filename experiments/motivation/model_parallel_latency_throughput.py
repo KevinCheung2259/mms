@@ -76,7 +76,7 @@ def plot_database(database, model_name="bert-2.6b"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--database_filename", type=str, default="profiling_result_long_sequence_manual.pkl")
+    parser.add_argument("--database_filename", type=str, default="experiments/motivation/motivation_profiling_results/profiling_result_long_sequence_manual.pkl")
     args = parser.parse_args()
     with open(args.database_filename, "rb") as f:
         database = pickle.load(f)

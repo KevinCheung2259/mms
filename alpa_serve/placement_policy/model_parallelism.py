@@ -5,8 +5,9 @@ import logging
 import math
 import multiprocessing
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Optional
 from itertools import product
+import itertools
 
 import numpy as np
 import ray
@@ -21,6 +22,7 @@ from alpa_serve.placement_policy.base_policy import (
 from alpa_serve.simulator.controller import simulate_one_case
 from alpa_serve.simulator.executable import Executable
 from alpa_serve.simulator.workload import Workload, GammaProcess
+from alpa_serve.simulator.monitor import Monitor
 from alpa_serve.trace import Trace
 from alpa_serve.util import (
     get_factors, get_partitions, get2tok, decompose2tok, all_node_combinations,
@@ -47,12 +49,13 @@ def compute_capability(model_data, parallel_config, max_bs):
     return max_cap * (0.99 ** num_stages)
 
 class MyModelParallelismILP(BasePlacementPolicy):
-    def __init__(self, verbose: int = 0):
+    def __init__(self, verbose: int = 0, model_groups: Optional[List[List[str]]] = None):
         super().__init__(verbose)
 
         self.time_limit = 30
         self.lamda = 0.1  # trade-off
         self.max_bs = 1
+        self.model_groups = model_groups
 
         # Hard coded for now. Expose this as parameters later
         self.group_configs = [
@@ -80,9 +83,117 @@ class MyModelParallelismILP(BasePlacementPolicy):
             device_counts.append(cluster_env.num_devices % cluster_env.num_devices_per_node)
         return all_node_combinations(device_counts)
     
+    def solve_one_device_group_NIP(self, model_datas, cluster_env, device_group, model_requests):
+        import numpy as np
+        from scipy.optimize import minimize, LinearConstraint, NonlinearConstraint
+
+        # 集群参数
+        N = cluster_env.num_devices_per_node
+        M = cluster_env.num_devices / N
+        E = cluster_env.mem_budget
+
+        # 模型参数
+        C = len(model_datas)
+        w = np.array([model_requests[model_data.name] for model_data in model_datas])
+        # 对w进行归一化
+        w = w.astype(float)
+        w /= np.sum(w)
+
+        # 模型并行参数
+        K = len(self.group_configs)
+        model_compute_cap = np.zeros((C, K))
+        model_weight_mem = np.zeros((C, K))
+        for i in range(C):
+            model_data = model_datas[i]
+            for k in range(K):
+                parallel_config = self.group_configs[k]
+                model_compute_cap[i][k] = compute_capability(model_data, parallel_config, self.max_bs)
+                model_weight_mem[i][k] = self.compute_max_stage_mem(model_data, parallel_config, cluster_env.mem_budget)
+
+        # 设备组参数
+        S = len(device_group)
+
+        # 1. 创建变量
+        # 将x, p, z平铺成一维数组进行优化
+        # x_size = C * S
+        # p_size = S * K
+        z_size = C * S * K
+
+        # 2. 目标函数
+        def objective(vars):
+            # x = vars[:x_size].reshape(C, S)
+            # p = vars[x_size:x_size + p_size].reshape(S, K)
+            # cap = np.sum(np.dot(x, model_compute_cap) * w[:, None], axis=0)
+            z = vars.reshape(C, S, K)
+            cap = np.zeros(C)
+            for j in range(S):
+                cap += np.sum(np.multiply(z[:, j, :], model_compute_cap), axis=1)
+            obj = np.sum(cap * w)
+            return -obj  # 最小化负目标函数
+
+        # 3. 约束条件
+        constraints = []
+
+        # (a). 每个GPU的内存约束
+        for j in range(S):
+            def memory_constraint(vars, j=j):
+                z = vars.reshape(C, S, K)
+                p = z[:, j, :]
+                return E - np.sum(np.multiply(p, model_weight_mem))
+            constraints.append({'type': 'ineq', 'fun': memory_constraint})
+
+        # (b). 每个device group, 选择的并行策略需满足容量约束
+        # for j in range(S):
+        #     def capacity_constraint(vars, j=j):
+        #         z = vars.reshape(C, S, K)
+        #         p = np.sum(z[:, j, :], axis=0)
+        #         return device_group[j] - np.sum(p[j, :] * self.group_sizes)
+        #     constraints.append({'type': 'eq', 'fun': capacity_constraint})
+
+        # (c). 每个设备组只能选择一个并行策略
+        # for j in range(S):
+        #     def single_parallel_strategy(vars, j=j):
+        #         z = vars.reshape(C, S, K)
+        #         p = np.sum(z[:, j, :], axis=0)
+        #         return 1 - np.sum(p[j, :])
+        #     constraints.append({'type': 'eq', 'fun': single_parallel_strategy})
+
+        # (d). 线性化约束
+        # 线性化z的约束（需要适当调整）
+        for i in range(C):
+            for j in range(S):
+                for k in range(K):
+                    def linearization(vars, i=i, j=j, k=k):
+                        z = vars.reshape(C, S, K)
+                        p = np.sum(z[:, j, :], axis=0)
+                        x = np.sum(z[i, :, :], axis=0)
+                        return z[i, j, k] - (x + p - 1)
+                    constraints.append({'type': 'ineq', 'fun': linearization})
+
+        # 4. 初始值和边界
+        initial_guess = np.zeros(z_size)
+        bounds = [(0, 1)] * z_size  # 假设变量的边界在 [0, 1] 之间
+
+        # 5. 求解
+        result = minimize(objective, initial_guess, constraints=constraints, bounds=bounds)
+
+        if result.success:
+            status = "Optimization succeeded"
+            objective_value = -result.fun  # 因为目标函数是负的
+        else:
+            status = "Optimization failed"
+            objective_value = -1.0
+
+        print(f"Status: {status}\tObjective: {objective_value}")
+
+        return result.x.reshape(C, S, K), objective_value
+
+    
     def solve_one_device_group_ILP(self, model_datas, cluster_env, device_group, model_requests):
         import pulp
-        from pulp import LpVariable, LpProblem, LpMaximize, lpSum, LpStatus, LpMinimize
+        from pulp import LpVariable, LpProblem, LpMaximize, lpSum, LpStatus, LpMinimize, value
+        from math import sqrt
+        from scipy.optimize import minimize
 
         # 集群参数
         N = cluster_env.num_devices_per_node
@@ -108,7 +219,9 @@ class MyModelParallelismILP(BasePlacementPolicy):
                 # weight_mem = model_data.profiling_result.para_dict.get(parallel_config, None).weight_mem
                 # model_weight_mem[i][k][:len(weight_mem)] = weight_mem
                 model_weight_mem[i][k] = self.compute_max_stage_mem(model_data, parallel_config, cluster_env.mem_budget)
-        
+        # 对model_compute_cap进行归一化，除以最小值
+        # model_compute_cap = model_compute_cap / np.min(model_compute_cap)
+
         # 设备组参数
         S = len(device_group)
 
@@ -163,15 +276,15 @@ class MyModelParallelismILP(BasePlacementPolicy):
         if prob.status in [pulp.LpStatusInfeasible]:
             raise RuntimeError("Cannot run the function under the given memory budget. Please increase the memory budget.")
         return x, p, objective
-    
-    def solve_placement(self, 
+
+
+    def solve_placement_one_model_group(self, 
                         model_datas: List[ModelData],
                         cluster_env: ClusterEnv,
                         train_workload: Workload = None,
                         interval: int = 0,
                         replacement_time: int = -1):
         import pulp
-        tic = time.time()
 
         # 计算train_workload中每个模型的请求率
         model_requests = OrderedDict()
@@ -204,8 +317,6 @@ class MyModelParallelismILP(BasePlacementPolicy):
                 x = x_
                 p = p_
                 best_device_group = device_group
-        
-        print(f"slove Time: {time.time() - tic}")
 
         C = len(model_datas)
         S = len(best_device_group)
@@ -239,7 +350,163 @@ class MyModelParallelismILP(BasePlacementPolicy):
                 group_models.append(tmp)
         
         return ModelPlacement(group_configs, group_models), {"objective": objective}
+    
+    
+    def solve_placement(self, 
+                        model_datas: List[ModelData],
+                        cluster_env: ClusterEnv,
+                        train_workload: Workload = None,
+                        interval: int = 0,
+                        replacement_time: int = -1):
         
+        tic = time.time()
+        if self.model_groups is None:
+            placement, objective = self.solve_placement_one_model_group(model_datas, cluster_env, train_workload, interval, replacement_time)
+            print(f"slove Time: {time.time() - tic}")
+            return placement, objective
+        else:
+            # 根据每个组模型的请求量，分配计算资源
+            model_requests = OrderedDict()
+            for request in train_workload.requests:
+                model_requests[request.model_name] = model_requests.get(request.model_name, 0) + 1  # 使用 get 方法简化计数
+
+            model_groups_requests = []
+            for model_group in self.model_groups:
+                group_requests = sum(model_requests[model_name] for model_name in model_group)  # 使用 sum 函数简化求和
+                model_groups_requests.append(group_requests)
+
+            model_groups_requests = np.array(model_groups_requests)
+            model_groups_requests = model_groups_requests / np.sum(model_groups_requests)  # 归一化
+
+            cluster_devices = cluster_env.num_devices
+            # 初步分配设备
+            initial_device_allocation = np.floor(model_groups_requests * cluster_devices).astype(int)
+            # 计算已分配的设备总数
+            total_allocated = np.sum(initial_device_allocation)
+            # 计算剩余设备数量
+            remaining_devices = cluster_devices - total_allocated
+            # 确保每个设备都被分配，优先分配给请求量较大的组
+            while remaining_devices > 0:
+                # 找到当前剩余请求最多的组
+                max_index = np.argmax(model_groups_requests * cluster_devices - initial_device_allocation)
+                initial_device_allocation[max_index] += 1
+                remaining_devices -= 1
+
+            # 最终的设备分配
+            model_group_devices = initial_device_allocation.tolist()
+                
+            group_configs = []
+            group_models = []
+            for i, model_group in enumerate(self.model_groups):
+                sub_model_datas = []
+                for model in model_datas:
+                    if model.name in model_group:
+                        sub_model_datas.append(model)
+                sub_cluster_env = ClusterEnv(model_group_devices[i], cluster_env.mem_budget, cluster_env.num_devices_per_node)
+                sub_sol, _ = self.solve_placement_one_model_group(sub_model_datas, sub_cluster_env, train_workload, interval, replacement_time)
+                group_configs += sub_sol.group_configs
+                # 将子组的模型索引转换为全局模型索引
+                group_models += [[model_datas.index(sub_model_datas[model_id]) for model_id in group] for group in sub_sol.group_models]
+            
+            print(f"slove Time: {time.time() - tic}")
+            return ModelPlacement(group_configs, group_models), None
+
+class MyModelParallelismHeuReplacement(MyModelParallelismILP):
+    def __init__(self, replacement_interval: int = -1,
+                 use_evo_search: bool = False, 
+                 dynamic_replacement: bool = False,
+                 replacement_time: int = 0,
+                 monitor: Monitor = None,
+                 verbose: int = 0):
+        super().__init__(verbose=verbose)
+
+        self.replacement_interval = replacement_interval
+        self.use_evo_search = use_evo_search
+        self.dynamic_replacement =  dynamic_replacement
+        self.replacement_time = replacement_time
+        self.monitor = monitor
+
+    def solve_placement(self,
+                        model_datas: List[ModelData],
+                        cluster_env: ClusterEnv,
+                        train_workload: Workload = None):
+        # 在初始阶段，用ILP求解模型放置
+        if self.monitor is None:
+            sol, _ = super().solve_placement(model_datas, cluster_env, train_workload)
+            return ModelPlacement(sol.group_configs, sol.group_models), None
+
+        ori_placement = self.monitor.placement
+        scale_up_model = self.monitor.scale_up_model
+        scale_down_model = self.monitor.scale_down_model
+
+        # 对于每个需要扩容的模型，找到需要缩容的模型，进行替换，并检查是否符合内存约束
+        while len(scale_up_model) > 0:
+            ori_group_configs, ori_group_models = ori_placement.group_configs, ori_placement.group_models
+            successful_replacement = False  # 标记是否成功替换
+
+            # 遍历尝试替换的缩容模型组合
+            for num_replace in range(0, len(scale_down_model) + 1):
+                # 尝试组合替换缩容模型
+                for replace_model_indice in itertools.combinations(scale_down_model, num_replace):
+                    new_placement = ori_placement.copy()
+                    new_group_configs, new_group_models = new_placement.group_configs, new_placement.group_models
+
+                    # 遍历所有放置组，进行替换
+                    for g in range(len(new_group_models)):
+                        if all(model_indice in new_group_models[g] for model_indice in replace_model_indice):
+                            # 移除缩容模型
+                            for model_indice in replace_model_indice:
+                                new_group_models[g].remove(model_indice)
+
+                            # 逐步添加扩容模型
+                            for scale_up_model_indice in scale_up_model[:]:  # 使用切片避免修改列表时出错
+                                new_group_models[g].append(scale_up_model_indice)
+
+                                # 创建新的放置方案并验证内存约束
+                                sol = ModelPlacement(new_group_configs, new_group_models)
+                                sol = sol.normalize()
+                                if sol.check(model_datas, cluster_env):  # 内存验证
+                                    # 更新放置方案
+                                    ori_placement = sol
+                                    # 删除已替换的模型
+                                    scale_down_model = [x for x in scale_down_model if x not in replace_model_indice]
+                                    scale_up_model.remove(scale_up_model_indice)  # 删除已放置的扩容模型
+                                    successful_replacement = True
+                                    print(f"Successful replacement: {replace_model_indice} -> {scale_up_model_indice}")
+                                    # break
+                                else:
+                                    # 如果内存不满足，回滚放置，跳出扩容模型添加循环
+                                    new_group_models[g] = ori_group_models[g]
+                                    break
+
+                            # 如果成功替换，退出当前循环
+                            if successful_replacement:
+                                break
+
+                    # 如果成功替换，退出内部循环
+                    if successful_replacement:
+                        break
+                
+                # 如果成功替换，退出外层循环
+                if successful_replacement:
+                    ori_placement = ModelPlacement(new_group_configs, new_group_models)
+                    ori_placement = ori_placement.normalize()
+                    break
+
+            # 如果所有需要扩容的模型都已经得到满足，退出外层循环
+            if len(scale_up_model) == 0:
+                break
+
+            # 如果没有可用的缩容模型进行替换，退出
+            if not successful_replacement:
+                break
+
+        # 输出没有被成功scale_up的模型
+        if len(scale_up_model) > 0:
+            print(f"Failed to scale up models: {scale_up_model}")
+        # 返回最终的模型放置方案
+        return ori_placement, None
+
 
 class MyModelParallelismILPReplacement(MyModelParallelismILP):
     def __init__(self, replacement_interval: int = -1,
@@ -268,13 +535,14 @@ class MyModelParallelismILPReplacement(MyModelParallelismILP):
             start_times = []
             placements = []
             for i in range(len(ws)):
-                sol, _ = super().solve_placement(model_datas, cluster_env, ws[i], self.replacement_interval)
+                sol, _ = super().solve_placement(model_datas, cluster_env, ws[i], interval=self.replacement_interval)
                 start_times.append(ws[i].arrivals[0])
                 placements.append(sol)
 
             return ModelPlacementWithReplacement(start_times, placements), None
         
         elif self.dynamic_replacement:
+            print("Replacement Time: ", self.replacement_time)
             sol, _ = super().solve_placement(model_datas, cluster_env, train_workload, 
                                              replacement_time=self.replacement_time)
             return ModelPlacement(sol.group_configs, sol.group_models), None
@@ -721,7 +989,10 @@ class ModelParallelismSearch(BasePlacementPolicy):
 
             print(f"score_mixed: {score_mixed:.3f}, score_separate: {scores[best_idx]:.3f}")
             if scores[best_idx] > score_mixed:
+                print("Separation is better.")
                 best_sol = sols[best_idx]
+            else:
+                print("Mixed is better.")
 
         if self.use_evo_search:
             best_sol = evolutionary_search(

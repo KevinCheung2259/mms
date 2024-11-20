@@ -6,7 +6,7 @@ import numpy as np
 import ray
 
 import sys
-sys.path.append('/home/zhangy/python_project/mms')
+sys.path.append('/home/zy/python_project/mms')
 
 from alpa_serve.simulator.controller import (Controller, DummyController,
     simulate_one_case, approximate_one_case)
@@ -36,7 +36,7 @@ GeneralModelCase = namedtuple("GeneralModelCase", [
 def get_general_model_serving_case(case, prof_database=None):
     assert isinstance(case, GeneralModelCase), "not GeneralModelCase"
     if prof_database is None:
-        prof_database = ProfilingDatabase("/home/zhangy/python_project/mms/alpa_serve/syn_profiling_result.pkl")
+        prof_database = ProfilingDatabase("/home/zy/python_project/mms/alpa_serve/syn_profiling_result.pkl")
 
     (exp_name, num_devices, mem_budget, model_types, model_names,
      total_rate, rate_distribution, arrival_process, arrival_process_kwargs,

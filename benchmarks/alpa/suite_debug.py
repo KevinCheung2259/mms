@@ -12,7 +12,7 @@ from benchmarks.alpa.equal_model_case import (EqualModelCase,
 suite_debug = {
 }
 
-prof_database = ProfilingDatabase("/home/zhangy/python_project/mms/alpa_serve/profiling_result.pkl", False)
+prof_database = ProfilingDatabase("/home/zy/python_project/mms/alpa_serve/profiling_result.pkl", False)
 
 def debug_case(per_model_rate, duration, placement):
     def register_models(controller):

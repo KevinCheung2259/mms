@@ -30,7 +30,7 @@ PerModelStatsResult = namedtuple("PerModelStatsResult",
          "latency_mean", "latency_std", "latency_p90", "latency_p99", "latency",
          "request_starts", "request_finishes", 
          # 新增属性
-         "model_is_running", "model_received_requests", "model_returned_requests", "model_dropped_requests"))
+         "model_goodput", "model_queue", "model_received_requests", "model_returned_requests", "model_dropped_requests"))
 
 PerDeviceStatsResult = namedtuple("PerDeviceStatsResult", ("num_requests",))
 
@@ -343,7 +343,6 @@ class Workload:
 
         names = list(model_indices.keys())
         names = np.sort(names)
-        names = sorted(names, key=lambda name: len(model_indices[name]) if model_indices[name] else float('inf'))
 
         stats = []
         for name in names:
@@ -365,15 +364,28 @@ class Workload:
             latency_p90 = sorted_latency[int(0.90 * len(sorted_latency))]
             latency_p99 = sorted_latency[int(0.99 * len(sorted_latency))]
 
-            # 遍历每个请求，记录每个模型每0.1s是否在运行
-            model_is_running = [False] * int(duration * 1 / sample_interval)
+            # 记录每个模型每秒的goodput
+            model_good = [0] * int(duration * 1 / sample_interval)
+            model_num_requests = [0] * int(duration * 1 / sample_interval)
+            for i in range(len(tmp_start)):
+                start_time = int((tmp_start[i]-begin_time) * 1 / sample_interval)
+                model_good[start_time] += tmp_good[i]
+                model_num_requests[start_time] += 1
+            model_goodput = [np.float32(model_good[i] / model_num_requests[i]) if model_num_requests[i] > 0 else np.float32(0) for i in range(len(model_good))]
+
+            # 记录每个模型中每秒的请求数
+            model_queue = [0] * int(duration * 1 / sample_interval)
             for i in range(len(tmp_start)):
                 start_time = int((tmp_start[i]-begin_time) * 1 / sample_interval)
                 end_time = int((tmp_finish[i]-begin_time) * 1 / sample_interval)
                 for j in range(start_time, end_time):
-                    model_is_running[j] = True
+                    if tmp_good[i]:
+                        model_queue[j] += 1
+            
+            # 记录每个模型中每秒的throughput
+            # model_throughput = np.zeros(
 
-            # 遍历每个请求，记录每个模型每0.1s收到的请求、返回和弃置的请求
+            # 遍历每个请求，记录每个模型每秒收到的请求、返回和弃置的请求
             model_received_requests = [0] * int(duration * 1 / sample_interval)
             model_returned_requests = [0] * int(duration * 1 / sample_interval)
             model_dropped_requests = [0] * int(duration * 1 / sample_interval)
@@ -393,7 +405,7 @@ class Workload:
                 np.mean(latency), np.std(latency),
                 latency_p90, latency_p99, latency, tmp_start, tmp_finish,
                 # 新增属性
-                model_is_running, model_received_requests, model_returned_requests, model_dropped_requests))
+                model_goodput, model_queue, model_received_requests, model_returned_requests, model_dropped_requests))
 
         return StatsResult(stats, None, np.mean(good), np.mean(finish - start),
                            len(start), len(start) / (start[-1] - start[0]))

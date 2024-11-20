@@ -62,11 +62,11 @@ def write_tsv(heads: Sequence[str],
 
     values = [str(x) for x in values]
 
-    # 检查文件是否存在，如果不存在则创建文件
+    # 检查文件是否存在，如果不存在则创建文件，并写入表头
     file_exists = os.path.isfile(filename)
     if not file_exists:
         with open(filename , "w", encoding="utf-8") as fout:
-            pass
+            fout.write("\t".join(heads) + "\n")
         print("Create file: ", filename)
     with open(filename, "a", encoding="utf-8") as fout:
         fout.write("\t".join(values) + "\n") 

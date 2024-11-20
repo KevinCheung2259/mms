@@ -58,6 +58,27 @@ class ModelPlacement:
         ]
         assert all(mem <= cluster_env.mem_budget for mem in group_mem)
         assert all(len(set(ms)) == len(ms) for ms in self.group_models)
+    
+    def check(self, model_datas, cluster_env):
+        '''
+        检查模型是否满足内存限制
+        '''
+        weight_mem = {}  # Dict[parallel_config -> [model_idx -> weight_mem]]
+        for parallel_config in self.group_configs:
+            weight_mem[parallel_config] = [
+                max(x.profiling_result.para_dict[parallel_config].weight_mem)
+                if parallel_config in x.profiling_result.para_dict
+                else inf
+                for x in model_datas]
+
+        group_mem = [
+            sum(weight_mem[c][m_id] for m_id in group_ms)
+            for c, group_ms in zip(self.group_configs, self.group_models)
+        ]
+        if all(mem <= cluster_env.mem_budget for mem in group_mem) and all(len(set(ms)) == len(ms) for ms in self.group_models):
+            return True
+        else:
+            return False
 
 
 @dataclasses.dataclass

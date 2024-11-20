@@ -10,12 +10,12 @@ from alpa_serve.util import GB
 # 我想导入同一个文件夹下utils.py中的函数，该怎么做？
 from util import smooth_list
 
-def plot_inspect_group_memroy(single_model_dir_path, plot_save_path, prof_database=None, model_placement=None, 
+def plot_inspect_group_memory(single_model_dir_path, plot_save_path, prof_database=None, model_placement=None, 
                               model_types=None, model_names=None, duration=3600):
     # 1. 获取每个group中的模型名称、并行方式
     # 2. 读取每个模型的内存使用情况
     if prof_database is None:
-        prof_database = ProfilingDatabase("/home/zhangy/python_project/mms/alpa_serve/syn_profiling_result.pkl")
+        prof_database = ProfilingDatabase("/home/zy/python_project/mms/alpa_serve/syn_profiling_result.pkl")
 
     # 获取文件夹中的所有文件
     files = os.listdir(single_model_dir_path)
@@ -36,7 +36,7 @@ def plot_inspect_group_memroy(single_model_dir_path, plot_save_path, prof_databa
             model_is_running = []
             full_path = os.path.join(single_model_dir_path, model_name + '.tsv')
             with open(full_path, 'r') as f:
-                lines = f.readlines()
+                lines = f.readlines()[1:]
                 for line in lines:
                     model_is_running.append(line.split('\t')[1].strip().lower() == 'true')
             model_is_running = [int(x) for x in model_is_running]
@@ -118,6 +118,6 @@ if __name__ == "__main__":
         model_placement.group_models = group_models
 
     
-    plot_inspect_group_memroy(args.single_model_dir_path, args.plot_cluster_save_path, model_placement=model_placement,
+    plot_inspect_group_memory(args.single_model_dir_path, args.plot_cluster_save_path, model_placement=model_placement,
                               model_types=model_types, model_names=model_names)
     

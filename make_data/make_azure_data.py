@@ -19,8 +19,7 @@ from alpa_serve.placement_policy import (ClusterEnv, ModelData,
     SelectiveReplicationILP, SelectiveReplicationGreedy,
     SelectiveReplicationReplacement, SelectiveReplicationUniform,
     ModelParallelismILP, ModelParallelismGreedy, ModelParallelismRR,
-    ModelParallelismSearch, MyModelParallelismILP, MyModelParallelismILPReplacement, ModelParallelismILPReplacement,
-    MyModelParallelismHeuReplacement)
+    ModelParallelismSearch, MyModelParallelismILP, MyModelParallelismILPReplacement, ModelParallelismILPReplacement)
 from alpa_serve.profiling import ProfilingDatabase
 from alpa_serve.trace import Trace, report_group_stats
 from alpa_serve.util import GB, write_tsv, ServingCase, inf, eps
@@ -30,7 +29,6 @@ from benchmarks.alpa.util import get_model_def
 from benchmarks.alpa.run_one_case import run_one_case
 from osdi23_artifact.general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
 from alpa_serve.placement_policy.base_policy import ModelPlacement
-from divide_models import divide_models
 
 GeneralModelCase = namedtuple("GeneralModelCase", [
     "exp_name", "num_devices", "num_devices_per_node", "mem_budget", "model_types", "model_names",
@@ -57,202 +55,6 @@ def approximate_one_case(case: ServingCase,
 
     workload = generate_workload()
 
-    if workload.enable_simulator_cache and workload.cached_data:
-        model_ids, slos, model_names, prof_ress = workload.cached_data
-        placement = place_models(None)
-    else:
-        # Launch the controller
-        controller = DummyController()
-        register_models(controller)
-        if placement:
-            placement = place_models(controller, placement=placement)
-        else:
-            start_placement_time = time.time()
-            placement = place_models(controller)
-            solver_time = time.time() - start_placement_time
-
-        # Note: assume the model registration order is the same as the model id order in group_models
-        model_names, prof_ress = zip(*controller.name2profiling.items())
-        unique_model_types = np.sort(list(set(["-".join(m.split("-")[:3]) for m in model_names])))
-        unique_model_types = list(unique_model_types)
-
-        name2model_id = {m: i for i, m in enumerate(model_names)}
-        unique_type2model_ids = None
-
-        model_ids = np.array([name2model_id.get(r.model_name, -1) for r in workload.requests], dtype=np.int32)
-        slos = np.array([r.slo for r in workload.requests], dtype=np.float32)
-
-        if workload.enable_simulator_cache:
-            workload.cached_data = (model_ids, slos, model_names, prof_ress)
-
-    if isinstance(placement, ModelPlacement):
-        if dynamic_placement == False:
-            (start, finish, good, 
-            model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
-            receive_request_model_ids, _, _) = approximate_one_case_one_placement(
-                placement, model_names, prof_ress, model_ids, slos, workload.arrivals, 
-                enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
-                scheduling_policy=scheduling_policy)
-        else:
-            arrivals = workload.arrivals
-            start_time = 0
-            ori_i = 0
-            start_i = 0
-            pt = 0
-            start_list, finish_list, good_list = [], [], []
-            model_num_requests_list, model_num_good_requests_list = [], []
-            group_num_requests_list, group_num_good_requests_list = [], []
-            placement_list = [placement]
-            change_time = [0]
-
-            for i in range(len(arrivals)):
-                if arrivals[i] > start_time:
-                    (start, finish, good, 
-                    model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
-                    receive_request_model_ids, replacement_time, monitor) = approximate_one_case_one_placement(
-                        placement, model_names, prof_ress, 
-                        model_ids[start_i:], slos[start_i:], workload.arrivals[start_i:], 
-                        enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
-                        scheduling_policy=scheduling_policy, replacement=True)
-
-                    if replacement_time is None:
-                        start_list.append(start)
-                        finish_list.append(finish)
-                        good_list.append(good)
-                        group_num_requests_list.append(group_num_requests)
-                        group_num_good_requests_list.append(group_num_good_requests)
-                        model_num_requests_list.append(model_num_requests)
-                        model_num_good_requests_list.append(model_num_good_requests)
-                        break
-                    
-                    start_i = np.where(arrivals == replacement_time)[0][0]
-                    start_time = replacement_time
-                    
-                    start_list.append(start[:start_i-ori_i])
-                    finish_list.append(finish[:start_i-ori_i])
-                    good_list.append(good[:start_i-ori_i])
-                    ori_i = start_i
-
-                    group_num_requests_list.append(group_num_requests)
-                    group_num_good_requests_list.append(group_num_good_requests)
-                    model_num_requests_list.append(model_num_requests)
-                    model_num_good_requests_list.append(model_num_good_requests)
-
-                    start_placement_time = time.time()
-                    print(f"start_time: {change_time[-1]}")
-                    new_placement = place_models(controller, replacement_time=replacement_time, monitor=monitor)
-                    solver_time += time.time() - start_placement_time
-                    # 判断两次placement是否相等
-                    if new_placement.group_models != placement.group_models:
-                        # print("replace at time: ", change_time[-1])
-                        change_time.append(start_time)
-                        placement_list.append(new_placement)
-                        placement = new_placement
-                    pt += 1
-            
-            start = np.concatenate(start_list)
-            finish = np.concatenate(finish_list)
-            good = np.concatenate(good_list)
-            try:
-                group_num_requests = np.sum(group_num_requests_list, axis=0)
-                group_num_good_requests = np.sum(group_num_good_requests_list, axis=0)
-            except:  # 若每个时间段的分组数量不一样，不能直接合并
-                group_num_requests = [item for sublist in group_num_requests_list for item in sublist]
-                group_num_good_requests = [item for sublist in group_num_good_requests_list for item in sublist]
-            model_num_requests = np.sum(model_num_requests_list, axis=0)
-            model_num_good_requests = np.sum(model_num_good_requests_list, axis=0)
-            # 打印每个阶段的placement
-            for i in range(len(placement_list)):
-                print(f"start_time: {change_time[i]}, placement {i}: {placement_list[i]}")
-            placement = ModelPlacementWithReplacement(change_time, placement_list)
-            assert isinstance(placement, ModelPlacementWithReplacement)
-
-    elif isinstance(placement, ModelPlacementWithReplacement):
-        arrivals = workload.arrivals
-        change_times = placement.start_times[1:] + [inf]
-
-        start_list, finish_list, good_list = [], [], []
-        model_num_requests_list, model_num_good_requests_list = [], []
-        group_num_requests_list, group_num_good_requests_list = [], []
-
-        start_i = 0
-        pt = 0
-
-        for i in range(len(arrivals)):
-            if arrivals[i] > change_times[pt]:
-                (start, finish, good, 
-                 model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests, 
-                 receive_request_model_ids, _) = approximate_one_case_one_placement(
-                     placement.placements[pt], model_names, prof_ress,
-                     model_ids[start_i:i], slos[start_i:i], arrivals[start_i:i], enable_batching=enable_batching)
-                start_list.append(start)
-                finish_list.append(finish)
-                good_list.append(good)
-                group_num_requests_list.append(group_num_requests)
-                group_num_good_requests_list.append(group_num_good_requests)
-                model_num_requests_list.append(model_num_requests)
-                model_num_good_requests_list.append(model_num_good_requests)
-
-                start_i = i
-                pt += 1
-
-        (start, finish, good, 
-         model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
-         receive_request_model_ids, _) = approximate_one_case_one_placement(
-             placement.placements[pt], model_names, prof_ress,
-             model_ids[start_i:], slos[start_i:], arrivals[start_i:], enable_batching=enable_batching)
-        start_list.append(start)
-        finish_list.append(finish)
-        good_list.append(good)
-        group_num_requests_list.append(group_num_requests)
-        group_num_good_requests_list.append(group_num_good_requests)
-        model_num_requests_list.append(model_num_requests)
-        model_num_good_requests_list.append(model_num_good_requests)
-
-        start = np.concatenate(start_list)
-        finish = np.concatenate(finish_list)
-        good = np.concatenate(good_list)
-        try:
-            group_num_requests = np.sum(group_num_requests_list, axis=0)
-            group_num_good_requests = np.sum(group_num_good_requests_list, axis=0)
-        except:  # 若每个时间段的分组数量不一样，不能直接合并
-            group_num_requests = [item for sublist in group_num_requests_list for item in sublist]
-            group_num_good_requests = [item for sublist in group_num_good_requests_list for item in sublist]
-        model_num_requests = np.sum(model_num_requests_list, axis=0)
-        model_num_good_requests = np.sum(model_num_good_requests_list, axis=0)
-        # 打印每个阶段的placement
-        for i in range(len(placement.placements)):
-            print(f"placement {i}: {placement.placements[i]}")
-
-    if fast_stats:
-        # Note: no warmup
-        interval = start[-1] - start[0]
-        per_model_stats = [PerModelStatsResult(
-            model_names[i], model_num_requests[i],
-            model_num_good_requests[i] / (model_num_requests[i] + eps),
-            model_num_requests[i] / interval,
-            0, 0, 0, 0, [], [], [], [], [], [], []) for i in range(len(model_names))]
-        stats = StatsResult(per_model_stats, tuple(group_num_requests),
-                            np.mean(good), np.mean(finish - start),
-                            len(start), len(start) / interval)
-    else:
-        if receive_request_model_ids is not None:
-            receive_request_model = set([m for m in receive_request_model_ids if m >= 0])
-            print("receive_request_model_num: ", len(list(receive_request_model)))
-            # 打印每个模型的goodput, 保留三位小数
-            for i in range(len(unique_model_types)):
-                model_type = unique_model_types[i]
-                model_goodput = model_num_good_requests[i] / (model_num_requests[i])
-                print(f"model_type: {model_type}, goodput: {round(model_goodput, 3)}")
-            stats = workload.compute_stats(start=start, finish=finish, good=good, warmup=warmup, 
-                                        receive_request_model_ids=receive_request_model_ids, 
-                                        unique_model_types=unique_model_types,
-                                        model_names=model_names, duration=duration)
-        else:
-            stats = workload.compute_stats(start=start, finish=finish, good=good, warmup=warmup, duration=duration)
-        stats.group_num_requests = tuple(group_num_requests)
-    
-    return stats, placement, solver_time
 
 def get_general_model_serving_case(case, prof_database=None, model_groups_num: Optional[int] = 1):
     assert isinstance(case, GeneralModelCase), "not GeneralModelCase"
@@ -287,36 +89,18 @@ def get_general_model_serving_case(case, prof_database=None, model_groups_num: O
     if arrival_process == "gamma":
         seed = 0
         arrival_processes = []
-        peak_rate = 10  # 峰值期间的请求率
+        peak_rate = 2  # 峰值期间的请求率
         base_rate = 0.2  # 其他时间的基础请求率
         interval_seconds = arrival_process_kwargs.get("interval_seconds", 600)
-
-        peak_times_list = [
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-            [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
-            [30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
-            [40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
-            [50, 51, 52, 53, 54, 55, 56, 57, 58, 59],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-            [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
-            [30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
-            [40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
-            [50, 51, 52, 53, 54, 55, 56, 57, 58, 59]]
-        
         for i in range(num_models):
             np.random.seed(seed)
             # 设置波峰的时间段（例如：100-200秒和300-400秒）
-            num_intervals = int(duration // interval_seconds)
-            # # 随机选择波峰的数量
-            # num_peaks = np.random.randint(1, duration // interval_seconds)
-            # # 随机选择波峰的时间段
-            # peak_times = np.random.choice(num_intervals, num_peaks, replace=False)
-            peak_times = peak_times_list[i]
+            num_intervals = duration // interval_seconds
+            # 随机选择波峰的时间段
+            peak_times = np.random.choice(num_intervals, 2, replace=False)
             seed += 1
             distribution = []
-            for t in range(num_intervals):
+            for t in range(duration // interval_seconds):
                 if t in peak_times:
                     rate = peak_rate * rates[i]
                 else:
@@ -353,11 +137,6 @@ def get_general_model_serving_case(case, prof_database=None, model_groups_num: O
                                     interval_seconds,
                                     arrival_distribution="power_law",
                                     arrival_distribution_params=arrival_distribution_params)
-        
-        # 画出每个模型的trace
-        from util import plot_model_traces
-        plot_model_traces(replays, model_names, duration, 60)  # 每分钟一个时间段
-        
         ws = []
         for model_name, slo in zip(model_names, slos):
             ws.append(replays[model_name].to_workload(slo))
@@ -449,20 +228,6 @@ def get_general_model_serving_case(case, prof_database=None, model_groups_num: O
     rates = [a.rate() for a in arrival_processes]
     cvs = [a.cv() for a in arrival_processes]
 
-    if model_groups_num > 1 and "groups" in policy_name:
-        model_groups = divide_models(model_names, duration=duration, replays=replays, group_num=model_groups_num)
-    else:
-        model_groups = None
-
-    def register_models(controller):
-        is_simulator = isinstance(controller, (Controller, DummyController))
-        # 注册每个模型到controller
-        for model_name, model_type in zip(model_names, model_types):
-            controller.register_model.remote(
-                model_name, get_model_def(model_type, is_simulator,
-                                          prof_database))
-        return
-
     def generate_workload(start=0):
         '''
         生成整个集群即将到来的工作负载，注意这里每个模型的arrival_processes是在之前已经生成好了的，
@@ -478,71 +243,6 @@ def get_general_model_serving_case(case, prof_database=None, model_groups_num: O
             #                                                 duration, slo=slos[i], seed=i)
         return w
 
-    def place_models(controller, placement=None, replacement_time=0, monitor=None):
-        num_models = len(model_names)
-        model_datas = []
-        for i in range(num_models):
-            model_datas.append(ModelData(model_names[i], slos[i], rates[i], cvs[i],
-                                         prof_database.get(model_types[i])))
-
-        if policy_name == "sr-ilp":
-            policy = SelectiveReplicationILP(verbose=1)
-        elif policy_name == "sr-greedy":
-            policy = SelectiveReplicationGreedy(verbose=1)
-        elif "sr-replace" in policy_name:
-            interval = int(policy_name.split("-")[2])
-            policy = SelectiveReplicationReplacement(verbose=1,
-                 replacement_interval=interval)
-        elif "my-mp-ilp-replace" in policy_name:
-            interval = int(policy_name.split("-")[-1])
-            policy = MyModelParallelismILPReplacement(verbose=2, replacement_interval=interval)
-        elif policy_name == "my-mp-ilp-dynamic":
-            policy = MyModelParallelismILPReplacement(verbose=2, dynamic_replacement=True,
-                                                      replacement_time=replacement_time)
-        elif policy_name == "heuristic-dynamic":
-            policy = MyModelParallelismHeuReplacement(verbose=2, dynamic_replacement=True,
-                                                      replacement_time=replacement_time, monitor=monitor)
-        elif "mp-ilp-replace" in policy_name:
-            interval = int(policy_name.split("-")[-1])
-            policy = ModelParallelismILPReplacement(verbose=2, replacement_interval=interval)
-        elif policy_name == "mp-ilp":
-            policy = ModelParallelismILP(verbose=1)
-        elif policy_name == "my-mp-ilp":   
-            policy = MyModelParallelismILP(verbose=2)
-        elif policy_name == "my-mp-ilp-model-groups":
-            policy = MyModelParallelismILP(verbose=2, model_groups=model_groups)
-        elif policy_name == "mp-round-robin":
-            policy = ModelParallelismRR(verbose=0)
-        elif policy_name in ["mp-search", "mp-search-evo", "mp-search-sep"]:
-            use_evo_search = "evo" in policy_name
-            use_separation = "sep" in policy_name
-            policy = ModelParallelismSearch(
-                use_evo_search=use_evo_search, use_separation=use_separation, verbose=2)
-        elif "mp-greedy" in policy_name:
-            group_size = int(policy_name.split("-")[2])
-            use_evo_search = "evo" in policy_name
-            policy = ModelParallelismGreedy(
-                use_evo_search=use_evo_search,
-                group_size=group_size, verbose=1)
-        elif policy_name == "sr-uniform":
-            policy = SelectiveReplicationUniform(verbose=1)
-        else:
-            raise ValueError(f"Invalid placement policy: {policy_name}")
-
-        if placement is not None:
-            policy.place_models_impl(controller, cluster_env, model_datas, placement)
-        else:
-            if "azure" in arrival_process:
-                placement = policy.place_models(controller, cluster_env, model_datas, train_workload)
-            elif "gamma" in arrival_process:
-                placement = policy.place_models(controller, cluster_env, model_datas, train_workload)
-            else:
-                placement = policy.place_models(controller, cluster_env, model_datas)
-
-        return placement
-
-    return ServingCase(register_models, generate_workload, place_models)
-
 
 _DATA_HEADS = ("exp_name", "num_models", "model_groups_num",
                "num_devices", "num_devices_per_node", "mem_budget", 
@@ -554,7 +254,7 @@ def run_one_general_model_case(case, mode, output_file=None, prof_database=None,
     serving_case = get_general_model_serving_case(case, prof_database, model_groups_num=model_groups_num)
     if "dynamic" in case.policy_name:
         dynamic_placement = True
-    else:
+    else :
         dynamic_placement = False
 
     if mode == "simulate":
@@ -661,7 +361,7 @@ if __name__ == "__main__":
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--ablation", action="store_true")
     parser.add_argument("--large-models", action="store_true")
-    parser.add_argument("--model_groups_num", type=int, default=2)
+    parser.add_argument("--model_groups_num", type=int, default=1)
     '''
     监控设置
     '''
@@ -806,9 +506,8 @@ if __name__ == "__main__":
 
     ##### goodput vs num_devices #####
     # total_rate = 5
-    num_devices_list = [8]  # 4, 8, 12, 16, 20
-    policies = ["heuristic-dynamic", "mp-search-sep"]
-    # policies = ["mp-search-sep"]
+    # num_devices_list = [4]  # 4, 8, 12, 16, 20
+    # policies = ["my-mp-ilp", "my-mp-ilp-replace-600", "my-mp-ilp-dynamic", "mp-search-sep", "sr-greedy", "sr-replace-600"]
     if "goodput_vs_num_devices" in experiments:
         print("=== Running goodput vs. #devices ===")
         exp_name = "goodput_vs_num_devices"
@@ -849,7 +548,6 @@ if __name__ == "__main__":
     # fixed_num_devices = 4
     # total_rate = 5
     # slo_scales = [1, 2.5, 5, 7.5, 10, 12.5, 15]
-    # 如果要修改slo需要同时修改monitor的slo!
     if "goodput_vs_slo" in experiments:
         print("=== Running goodput vs. SLO ===")
         exp_name = "goodput_vs_slo"
@@ -865,8 +563,7 @@ if __name__ == "__main__":
     if args.policy:
         policies = [args.policy]
     else:
-        # policies = ["my-mp-ilp", "my-mp-ilp-model-groups", "mp-search-sep"]
-        policies = ["my-mp-ilp-model-groups"]
+        policies = ["my-mp-ilp", "my-mp-ilp-replace-600", "my-mp-ilp-dynamic", "mp-search-sep", "sr-greedy", "sr-replace-600"]
     fixed_num_devices = num_devices
     ##### goodput vs rate/rate_scale #####
     if "goodput_vs_rate" in experiments:

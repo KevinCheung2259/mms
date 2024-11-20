@@ -96,3 +96,7 @@ experiments/motivation/**/*.pkl
 
 # ipython
 .ipynb_checkpoints
+
+# my-experiments
+monitor/**/*.png
+monitor/**/*.tsv

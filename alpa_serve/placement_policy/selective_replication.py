@@ -134,6 +134,7 @@ class SelectiveReplicationGreedy(BasePlacementPolicy):
                         model_datas: List[ModelData],
                         cluster_env: ClusterEnv,
                         train_workload: Workload = None):
+        tic = time.time()
         # Generate workloads
         if train_workload is None:
             train_workload = gen_train_workload(model_datas)
@@ -150,6 +151,7 @@ class SelectiveReplicationGreedy(BasePlacementPolicy):
 
         if self.use_evo_search:
             sol = evolutionary_search([sol], model_datas, evaluator, self.verbose)
+        print('solver time:', time.time() - tic)
         return sol, None
 
 

@@ -4,6 +4,8 @@ import os
 import argparse
 import matplotlib.pyplot as plt
 from util import smooth_list
+import numpy as np
+import pandas as pd
 
 def draw_plot(*lists, xlabel='X-Axis', ylabel='Y-Axis', colors=None, 
               title='Line Plot', labels=None, xlim=None, ylim=None, save_path=None):
@@ -66,36 +68,64 @@ def draw_plot(*lists, xlabel='X-Axis', ylabel='Y-Axis', colors=None,
     # 显示图表
     plt.show()
 
+def plot_inspect_single_model(single_model_dir_path, plot_save_path, target):
+    # 获取文件夹中的所有文件
+    files = [f for f in os.listdir(single_model_dir_path) if f.endswith('.tsv')]
+    model_names = [f[:-4] for f in files]
+    model_names = np.sort(model_names)
+    num_models = len(files)
+    fig, axs = plt.subplots(nrows=(num_models + 1) // 2, ncols=2, figsize=(14, 10))
+    axs = axs.flatten()  # 将子图数组展平，方便迭代访问
+
+    for i in range(len(model_names)):
+        # 模型名称为文件名
+        model_name = model_names[i]
+        file_name = model_name + '.tsv'
+
+        full_path = os.path.join(single_model_dir_path, file_name)
+        df = pd.read_csv(full_path, sep='\t')
+
+        model_target = list(df[target])
+        # 对于model_queue，每60个数据点求和
+        if target in ['model_queue', 'model_returned_requests']:
+            model_target = [sum(model_target[i:i+60]) for i in range(0, len(model_target), 60)]
+
+        # 绘制到对应子图
+        axs[i].plot(model_target, label=f"{model_name} {target}")
+        axs[i].set_title(f"{model_name} {target}")
+        # axs[i].set_ylabel(f"#{target}")
+        axs[i].set_xlabel("time")
+        # axs[i].legend()
+
+    # 移除多余的空白子图
+    for j in range(i + 1, len(axs)):
+        fig.delaxes(axs[j])
+
+    # 调整布局并显示图表
+    plt.tight_layout()
+    
+    # 保存图表到为pdf
+    plt.savefig(plot_save_path + '/' + target + '.pdf')
+    print(f"图表已保存至 {plot_save_path}/{target}.pdf")
+    plt.close()
+
 def plot_inspect_single_model_request(single_model_dir_path, plot_save_path):
     # 获取文件夹中的所有文件
-    files = os.listdir(single_model_dir_path)
+    files = [f for f in os.listdir(single_model_dir_path) if f.endswith('.tsv')]
 
     for file_name in files:
-        if not file_name.endswith('.tsv'):
-            continue
         # 模型名称为文件名
         model_name = file_name[:-4]
-        model_is_running = []
         model_received_requests = []
         model_returned_requests = []
         model_dropped_requests = []
 
-        # 读取文件每一行的信息到model_is_running, model_received_requests, model_returned_requests, model_dropped_requests
         full_path = os.path.join(single_model_dir_path, file_name)
-        print(full_path)
-        with open(full_path, 'r') as f:
-            lines = f.readlines()
-            for line in lines:
-                model_is_running.append(line.split('\t')[1].strip().lower() == 'true')
-                model_received_requests.append(int(line.split('\t')[2]))
-                model_returned_requests.append(int(line.split('\t')[3]))
-                model_dropped_requests.append(int(line.split('\t')[4]))
+        df = pd.read_csv(full_path, sep='\t')
 
-        # 将model_is_running, model_received_requests, model_returned_requests, model_dropped_requests转换为整数
-        model_is_running = [int(x) for x in model_is_running]
-        model_received_requests = [int(x) for x in model_received_requests]
-        model_returned_requests = [int(x) for x in model_returned_requests]
-        model_dropped_requests = [int(x) for x in model_dropped_requests]
+        model_received_requests = list(df['model_received_requests'])
+        model_returned_requests = list(df['model_returned_requests'])
+        model_dropped_requests = list(df['model_dropped_requests'])
 
         # 画出model_is_running, model_received_requests, model_returned_requests, model_dropped_requests的折线图
         plt.figure(figsize=(12, 6))
@@ -112,65 +142,130 @@ def plot_inspect_single_model_request(single_model_dir_path, plot_save_path):
         print(f"图表已保存至 {plot_save_path}/{model_name}.png")
         plt.close()
 
-def plot_inspect_cluster_request(single_model_dir_path, plot_save_path, interval=1):
-    # 获取文件夹中的所有文件
-    files = os.listdir(single_model_dir_path)
+# def plot_inspect_single_model_returned_requests(single_model_dir_path, plot_save_path):
+#     # 获取文件夹中的所有文件
+#     files = [f for f in os.listdir(single_model_dir_path) if f.endswith('.tsv')]
+#     model_names = [f[:-4] for f in files]
+#     model_names = np.sort(model_names)
+#     num_models = len(files)
+#     fig, axs = plt.subplots(nrows=(num_models + 1) // 2, ncols=2, figsize=(14, 10))
+#     axs = axs.flatten()  # 将子图数组展平，方便迭代访问
 
-    # 记录集群在整个过程中的请求数、返回请求数、丢弃请求数、模型是否在运行
-    total_received_requests = []
-    total_returned_requests = []
-    total_dropped_requests = []
-    total_is_running = []
-    model_num = 0
+#     for i in range(len(model_names)):
+#         # 模型名称为文件名
+#         model_name = model_names[i]
+#         file_name = model_name + '.tsv'
+
+#         full_path = os.path.join(single_model_dir_path, file_name)
+#         df = pd.read_csv(full_path, sep='\t')
+
+#         model_queue = list(df['model_returned_requests'])
+#         # 对于model_queue，每60个数据点求和
+#         new_model_queue = [sum(model_queue[i:i+60]) for i in range(0, len(model_queue), 60)]
+
+#         # 绘制到对应子图
+#         axs[i].plot(new_model_queue, label=f"{model_name} returned requests")
+#         axs[i].set_title(f"{model_name} returned requests per minute")
+#         axs[i].set_ylabel("#returned requests")
+#         axs[i].set_xlabel("time (minute)")
+#         axs[i].legend()
+
+#     # 移除多余的空白子图
+#     for j in range(i + 1, len(axs)):
+#         fig.delaxes(axs[j])
+
+#     # 调整布局并显示图表
+#     plt.tight_layout()
+    
+#     # 保存图表到为pdf
+#     plt.savefig(plot_save_path + '/' + 'model_returned_requests.pdf')
+#     print(f"图表已保存至 {plot_save_path}/model_returned_requests.pdf")
+#     plt.close()
+
+# def plot_inspect_single_model_queue(single_model_dir_path, plot_save_path):
+#     # 获取文件夹中的所有文件
+#     files = [f for f in os.listdir(single_model_dir_path) if f.endswith('.tsv')]
+#     model_names = [f[:-4] for f in files]
+#     model_names = np.sort(model_names)
+#     num_models = len(files)
+#     fig, axs = plt.subplots(nrows=(num_models + 1) // 2, ncols=2, figsize=(14, 10))
+#     axs = axs.flatten()  # 将子图数组展平，方便迭代访问
+
+#     for i in range(len(model_names)):
+#         # 模型名称为文件名
+#         model_name = model_names[i]
+#         file_name = model_name + '.tsv'
+
+#         full_path = os.path.join(single_model_dir_path, file_name)
+#         df = pd.read_csv(full_path, sep='\t')
+
+#         model_queue = list(df['model_queue'])
+#         # 对于model_queue，每60个数据点求和
+#         new_model_queue = [sum(model_queue[i:i+60]) for i in range(0, len(model_queue), 60)]
+
+#         # 绘制到对应子图
+#         axs[i].plot(new_model_queue, label=f"{model_name} queue")
+#         axs[i].set_title(f"{model_name} queue per minute")
+#         axs[i].set_ylabel("#requests")
+#         axs[i].set_xlabel("time (minute)")
+#         axs[i].legend()
+
+#     # 移除多余的空白子图
+#     for j in range(i + 1, len(axs)):
+#         fig.delaxes(axs[j])
+
+#     # 调整布局并显示图表
+#     plt.tight_layout()
+    
+#     # 保存图表到为pdf
+#     plt.savefig(plot_save_path + '/' + 'model_queue.pdf')
+#     print(f"图表已保存至 {plot_save_path}/model_queue.pdf")
+#     plt.close()
+
+
+def plot_inspect_cluster_request(single_model_dir_path, plot_save_path, interval=1):
+    # 获取文件夹中的所有 TSV 文件
+    files = [f for f in os.listdir(single_model_dir_path) if f.endswith('.tsv')]
+
+    total_received_requests, total_returned_requests, total_dropped_requests, total_model_queue = [], [], [], []
 
     for file_name in files:
-        if not file_name.endswith('.tsv'):
-            continue
-        # 模型名称为文件名
-        model_num += 1
-        model_is_running = []
-        model_received_requests = []
-        model_returned_requests = []
-        model_dropped_requests = []
-
-        # 读取文件每一行的信息到model_is_running, model_received_requests, model_returned_requests, model_dropped_requests
+        # 读取 TSV 文件
         full_path = os.path.join(single_model_dir_path, file_name)
-        print(full_path)
-        with open(full_path, 'r') as f:
-            lines = f.readlines()
-            for line in lines:
-                model_is_running.append(line.split('\t')[1].strip().lower() == 'true')
-                model_received_requests.append(int(line.split('\t')[2]))
-                model_returned_requests.append(int(line.split('\t')[3]))
-                model_dropped_requests.append(int(line.split('\t')[4]))
         
-        model_is_running = [int(x) for x in model_is_running]
-        total_is_running.append(model_is_running)
-        total_received_requests.append(model_received_requests)
-        total_returned_requests.append(model_returned_requests)
-        total_dropped_requests.append(model_dropped_requests)
-
-    # 将model_is_running等沿着dim=1的方向求和
-    total_is_running = [sum(x) for x in zip(*total_is_running)]
+        # 读取 TSV 文件内容到 DataFrame
+        df = pd.read_csv(full_path, sep='\t')
+        total_received_requests.append(list(df['model_received_requests']))
+        total_returned_requests.append(list(df['model_returned_requests']))
+        total_dropped_requests.append(list(df['model_dropped_requests']))
+        total_model_queue.append(list(df['model_queue']))
+    
+    # 计算集群的总请求数、返回请求数、丢弃请求数、队列长度
     total_received_requests = [sum(x) for x in zip(*total_received_requests)]
     total_returned_requests = [sum(x) for x in zip(*total_returned_requests)]
     total_dropped_requests = [sum(x) for x in zip(*total_dropped_requests)]
+    total_model_queue = [sum(x) for x in zip(*total_model_queue)]
 
-    if interval > 1:
-        total_received_requests = smooth_list(total_received_requests, interval=interval)
-        total_returned_requests = smooth_list(total_returned_requests, interval=interval)
-        total_dropped_requests = smooth_list(total_dropped_requests, interval=interval)
-        total_is_running = smooth_list(total_is_running, interval=interval)
+    # 处理平滑数据
+    total_received_requests = smooth_list(total_received_requests, interval=interval)
+    total_returned_requests = smooth_list(total_returned_requests, interval=interval)
+    total_dropped_requests = smooth_list(total_dropped_requests, interval=interval)
+    total_model_queue = smooth_list(total_model_queue, interval=interval)
 
-    draw_plot(total_received_requests, total_returned_requests, total_dropped_requests, 
-            labels=['total_received_requests', 'total_returned_requests', 'total_dropped_requests'],
-            colors=['orange', 'green', 'red'], xlabel='Time(s)', ylabel='Requests', title='Cluster Requests', 
-            save_path=plot_save_path + '/cluster_requests.png')
-    
-    total_is_running = [int(x / model_num * 100) for x in total_is_running]
-    draw_plot(total_is_running, labels=['total_is_running'], colors=['blue'], xlabel='Time(s)', ylabel='Percentage(%)', 
-            ylim=(0, 100), title='Cluster Running Percentage',
-            save_path=plot_save_path + '/cluster_running_percentage.png')
+    # 绘制请求数折线图
+    draw_plot(
+        total_received_requests, total_returned_requests, total_dropped_requests,
+        labels=['total_received_requests', 'total_returned_requests', 'total_dropped_requests'],
+        colors=['orange', 'green', 'red'], xlabel='Time(s)', ylabel='Requests', title='Cluster Requests',
+        save_path=os.path.join(plot_save_path, 'cluster_requests.png')
+    )
+
+    # 绘制集群队列长度折线图
+    draw_plot(
+        total_model_queue, labels=['total_model_queue'], colors=['blue'],
+        xlabel='Time(s)', ylabel='Queue Length', title='Cluster Queue Length',
+        save_path=os.path.join(plot_save_path, 'cluster_queue.png')
+    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser() 
@@ -184,5 +279,5 @@ if __name__ == "__main__":
     # 若没有plot_save_path，则创建
     if not os.path.exists(args.plot_single_save_path):
         os.makedirs(args.plot_single_save_path)
-    plot_inspect_single_model_request(args.single_model_dir_path, args.plot_single_save_path)
+    # plot_inspect_single_model_request(args.single_model_dir_path, args.plot_single_save_path)
     plot_inspect_cluster_request(args.single_model_dir_path, args.plot_cluster_save_path)

@@ -15,14 +15,14 @@ from benchmarks.alpa.run_one_case import run_one_case
 from osdi23_artifact.general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
 from benchmarks.alpa.general_model_case import GeneralModelCase, get_general_model_serving_case
 from my_general_model_case import approximate_one_case
-from request_inspect import plot_inspect_single_model_request, plot_inspect_cluster_request
-from memory_usage_inspect import plot_inspect_group_memroy
+from request_inspect import plot_inspect_single_model_request, plot_inspect_cluster_request, plot_inspect_single_model
+from memory_usage_inspect import plot_inspect_group_memory
 
 _SINGLE_MODEL_DATA_HEADS = ("model_name", "num_requests", "goodput", "throughput", "avg_latency", 
                "latency_std", "latency_p90", "latency_p99") 
 
 _SINGLE_MODEL_DATA_HEADS_DETAIL_TIME_WINDOW = (
-               "model_name", "model_is_running", "model_received_requests", "model_returned_requests", "model_dropped_requests")
+               "model_name", "model_goodput", "model_queue", "model_received_requests", "model_returned_requests", "model_dropped_requests")
 
 def run_monitor_one_general_model_case(case, serving_case, mode, debug=False, placement=None, monitor_kwargs=None):
     model_mapping_strategy = monitor_kwargs.get("model_mapping_strategy", None)
@@ -31,7 +31,7 @@ def run_monitor_one_general_model_case(case, serving_case, mode, debug=False, pl
     detail = monitor_kwargs.get("detail", False)
     output_file = monitor_kwargs.get("output_file", None)
     if mode == "simulate":
-        stats, placement = approximate_one_case(serving_case, duration=duration, debug=debug,
+        stats, placement, solver_time = approximate_one_case(serving_case, duration=duration, debug=debug,
                                                 placement=placement, model_mapping_strategy=model_mapping_strategy,
                                                 scheduling_policy=scheduling_policy)
     else:
@@ -40,9 +40,9 @@ def run_monitor_one_general_model_case(case, serving_case, mode, debug=False, pl
     #Workload.print_stats(stats)
     print(f"group #req: {stats.group_num_requests}")
 
-    (exp_name, num_devices, mem_budget, model_types, model_names,
-    total_rate, rate_distribution, arrival_process, arrival_process_kwargs,
-    slo_scale, duration, policy_name) = case
+    (exp_name, num_devices, num_devices_per_node, mem_budget, model_types, model_names,
+     total_rate, rate_distribution, arrival_process, arrival_process_kwargs,
+     slo_scale, duration, policy_name) = case
 
     case_info = (num_devices, mem_budget, total_rate,
                  rate_distribution, arrival_process,
@@ -84,8 +84,8 @@ def run_monitor_one_general_model_case(case, serving_case, mode, debug=False, pl
         os.makedirs(output_file_single_model_dir, exist_ok=True)
         for model_stats in stats.per_model_stats:
             output_file_single_model_detail = os.path.join(output_file_single_model_dir, f"{model_stats.name}.tsv")
-            for i in range(len(model_stats.model_is_running)):
-                detail_values = (model_stats.name, model_stats.model_is_running[i], model_stats.model_received_requests[i], 
+            for i in range(len(model_stats.model_queue)):
+                detail_values = (model_stats.name, model_stats.model_goodput[i], model_stats.model_queue[i], model_stats.model_received_requests[i], 
                                     model_stats.model_returned_requests[i], model_stats.model_dropped_requests[i])
                 write_tsv(_SINGLE_MODEL_DATA_HEADS_DETAIL_TIME_WINDOW, detail_values, output_file_single_model_detail, print_line=False)
         
@@ -94,12 +94,16 @@ def run_monitor_one_general_model_case(case, serving_case, mode, debug=False, pl
         plot_single_save_path = output_file_single_model.split('.')[0] + "_plot"
         if not os.path.exists(plot_single_save_path):
             os.makedirs(plot_single_save_path)
+
         plot_inspect_single_model_request(output_file_single_model_dir, plot_single_save_path)
         plot_inspect_cluster_request(output_file_single_model_dir, cluster_output_file_dir)
+        plot_inspect_single_model(output_file_single_model_dir, plot_single_save_path, "model_queue")
+        plot_inspect_single_model(output_file_single_model_dir, plot_single_save_path, "model_goodput")
+        plot_inspect_single_model(output_file_single_model_dir, plot_single_save_path, "model_returned_requests")
 
         # 画出内存使用情况
-        plot_inspect_group_memroy(output_file_single_model_dir, cluster_output_file_dir, model_placement=placement,
-                            model_types=model_types, model_names=model_names)
+        # plot_inspect_group_memroy(output_file_single_model_dir, cluster_output_file_dir, model_placement=placement,
+        #                     model_types=model_types, model_names=model_names)
 
     return values
 
@@ -143,7 +147,7 @@ if __name__ == "__main__":
     请求参数
     '''
     parser.add_argument("--trace-dir", type=str, 
-                    default="/home/zhangy/data/datasets/azurefunctions-dataset2019/azure_v1.pkl")
+                    default="/home/zy/data/datasets/azurefunctions-dataset2019/azure_v1.pkl")
     parser.add_argument("--workload", type=str, default="azure_v1",
                         choices=["synthetic", "azure_v1", "azure_v2"])
     parser.add_argument("--rate-distribution", choices=["uniform", "power_law"],
@@ -250,7 +254,7 @@ if __name__ == "__main__":
         arrival_process = "azure_v1"
         arrival_process_kwargs = {"rate_scale": fixed_rate_scale * args.rate_scale,
                                   "cv_scale": fixed_cv_scale,
-                                  "trace_dir": "/home/zhangy/data/datasets/azurefunctions-dataset2019/azure_v1.pkl"}
+                                  "trace_dir": "/home/zy/data/datasets/azurefunctions-dataset2019/azure_v1.pkl"}
     elif args.workload == "azure_v2":
         # real trace does not need these config
         rate_distribution = None
@@ -265,7 +269,7 @@ if __name__ == "__main__":
         arrival_process = "azure_v2"
         arrival_process_kwargs = {"rate_scale": fixed_rate_scale,
                                   "cv_scale": fixed_cv_scale,
-                                  "trace_dir": "/home/zhangy/data/datasets/azure_v2.pkl"}
+                                  "trace_dir": "/home/zy/data/datasets/azure_v2.pkl"}
     else:
         raise ValueError("Unsupported workload!")
 

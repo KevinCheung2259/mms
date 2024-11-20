@@ -32,7 +32,7 @@ EqualModelCase = namedtuple("EqualModelCase", [
 
 def get_equal_model_serving_case(case, prof_database=None):
     if prof_database is None:
-        prof_database = ProfilingDatabase("/home/zhangy/python_project/mms/alpa_serve/profiling_result.pkl")
+        prof_database = ProfilingDatabase("/home/zy/python_project/mms/alpa_serve/profiling_result.pkl")
 
     (exp_name, num_devices, mem_budget, model_type, num_models,
      total_rate, rate_distribution, arrival_process, arrival_process_kwargs,
@@ -359,7 +359,7 @@ if __name__ == "__main__":
     slo = 0.5
     duration = 50
     policy_name = "mp-greedy-2"
-    output_file_dir = "/home/zhangy/python_project/mms/my-test/"
+    output_file_dir = "/home/zy/python_project/mms/my-test/"
 
     cases = [
         EqualModelCase(exp_name, num_devices, mem_budget, model_type, num_models,
