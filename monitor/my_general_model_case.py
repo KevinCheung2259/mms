@@ -20,7 +20,7 @@ from alpa_serve.placement_policy import (ClusterEnv, ModelData,
     SelectiveReplicationReplacement, SelectiveReplicationUniform,
     ModelParallelismILP, ModelParallelismGreedy, ModelParallelismRR,
     ModelParallelismSearch, MyModelParallelismILP, MyModelParallelismILPReplacement, ModelParallelismILPReplacement,
-    MyModelParallelismHeuReplacement)
+    MyModelParallelismHeuReplacement, MySelectiveReplicationReplacement)
 from alpa_serve.profiling import ProfilingDatabase
 from alpa_serve.trace import Trace, report_group_stats
 from alpa_serve.util import GB, write_tsv, ServingCase, inf, eps
@@ -47,7 +47,8 @@ def approximate_one_case(case: ServingCase,
                          placement: Optional[ModelPlacement] = None,
                          model_mapping_strategy: Optional[str] = None,
                          scheduling_policy: Optional[str] = 'load_balance',
-                         dynamic_placement: Optional[bool] = False) -> Tuple[StatsResult, ModelPlacement]:
+                         dynamic_placement: Optional[bool] = False,
+                         rl_kwargs: Optional[dict]=None) -> Tuple[StatsResult, ModelPlacement]:
     """A fast simulator that only simulates one stage for a pipeline."""
     from alpa_serve.placement_policy.base_policy import (
         ModelPlacement, ModelPlacementWithReplacement)
@@ -84,6 +85,12 @@ def approximate_one_case(case: ServingCase,
 
         if workload.enable_simulator_cache:
             workload.cached_data = (model_ids, slos, model_names, prof_ress)
+    
+    # 训练RL模型
+    if rl_kwargs.get("use_rl", False):
+        from alpa_serve.placement_policy.model_parallelism_RL import train_rl_one_case
+        agent = train_rl_one_case(
+                placement, model_names, prof_ress, model_ids, slos, workload.arrivals, rl_kwargs)
 
     if isinstance(placement, ModelPlacement):
         if dynamic_placement == False:
@@ -93,9 +100,78 @@ def approximate_one_case(case: ServingCase,
                 placement, model_names, prof_ress, model_ids, slos, workload.arrivals, 
                 enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
                 scheduling_policy=scheduling_policy)
-        else:
+            
+        # if rl_kwargs.get("use_rl", False):
+        #     window_size = 200
+        #     arrivals = workload.arrivals
+        #     ori_i = 0
+        #     start_i = 0
+        #     end_i = start_i + window_size
+        #     pt = 0
+        #     start_list, finish_list, good_list = [], [], []
+        #     model_num_requests_list, model_num_good_requests_list = [], []
+        #     group_num_requests_list, group_num_good_requests_list = [], []
+        #     placement_list = [placement]
+        #     change_time = [arrivals[0]]
+
+        #     while start_i < len(arrivals):
+        #         # end_i不得超过边界
+        #         end_i = min(len(arrivals), end_i)
+        #         (start, finish, good, 
+        #             model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
+        #             receive_request_model_ids, replacement_time, monitor) = approximate_one_case_one_placement(
+        #                 placement, model_names, prof_ress, 
+        #                 model_ids[start_i:end_i], slos[start_i:end_i], workload.arrivals[start_i:end_i], 
+        #                 enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
+        #                 scheduling_policy=scheduling_policy, replacement=False)
+               
+        #         start_list.append(start)
+        #         finish_list.append(finish)
+        #         good_list.append(good)
+        #         group_num_requests_list.append(group_num_requests)
+        #         group_num_good_requests_list.append(group_num_good_requests)
+        #         model_num_requests_list.append(model_num_requests)
+        #         model_num_good_requests_list.append(model_num_good_requests)
+
+        #         start_placement_time = time.time()
+        #         replacement_time = arrivals[end_i]
+        #         print(f"try to solve placement at time: {replacement_time}")
+        #         new_placement = place_models(controller, replacement_time=replacement_time, monitor=monitor, agent=agent)
+        #         solver_time += time.time() - start_placement_time
+        #         # 判断两次placement是否相等
+        #         if new_placement.group_models != placement.group_models:
+        #             # print("replace at time: ", change_time[-1])
+        #             change_time.append(replacement_time)
+        #             placement_list.append(new_placement)
+        #             placement = new_placement
+        #             print(f"placement changed at time: {replacement_time}")
+        #         else:
+        #             print("new_placement equal to placement, no changed!")
+        #         pt += 1
+        #         start_i = end_i
+        #         end_i = start_i + window_size
+            
+        #     start = np.concatenate(start_list)
+        #     finish = np.concatenate(finish_list)
+        #     good = np.concatenate(good_list)
+        #     try:
+        #         group_num_requests = np.sum(group_num_requests_list, axis=0)
+        #         group_num_good_requests = np.sum(group_num_good_requests_list, axis=0)
+        #     except:  # 若每个时间段的分组数量不一样，不能直接合并
+        #         group_num_requests = [item for sublist in group_num_requests_list for item in sublist]
+        #         group_num_good_requests = [item for sublist in group_num_good_requests_list for item in sublist]
+        #     model_num_requests = np.sum(model_num_requests_list, axis=0)
+        #     model_num_good_requests = np.sum(model_num_good_requests_list, axis=0)
+        #     # 打印每个阶段的placement
+        #     for i in range(len(placement_list)):
+        #         print(f"start_time: {change_time[i]}, placement {i}: {placement_list[i]}")
+        #     placement = ModelPlacementWithReplacement(change_time, placement_list)
+        #     assert isinstance(placement, ModelPlacementWithReplacement)
+
+        
+        else: # 这一部分是动态放置dynamic用到的代码
             arrivals = workload.arrivals
-            start_time = 0
+            start_time = arrivals[0]
             ori_i = 0
             start_i = 0
             pt = 0
@@ -103,7 +179,7 @@ def approximate_one_case(case: ServingCase,
             model_num_requests_list, model_num_good_requests_list = [], []
             group_num_requests_list, group_num_good_requests_list = [], []
             placement_list = [placement]
-            change_time = [0]
+            change_time = [arrivals[0]]
 
             for i in range(len(arrivals)):
                 if arrivals[i] > start_time:
@@ -139,8 +215,11 @@ def approximate_one_case(case: ServingCase,
                     model_num_good_requests_list.append(model_num_good_requests)
 
                     start_placement_time = time.time()
-                    print(f"start_time: {change_time[-1]}")
-                    new_placement = place_models(controller, replacement_time=replacement_time, monitor=monitor)
+                    print(f"try to solve placement at time: {replacement_time}")
+                    if rl_kwargs.get("use_rl", False):
+                        new_placement = place_models(controller, replacement_time=replacement_time, monitor=monitor, agent=agent)
+                    else:
+                        new_placement = place_models(controller, replacement_time=replacement_time, monitor=monitor)
                     solver_time += time.time() - start_placement_time
                     # 判断两次placement是否相等
                     if new_placement.group_models != placement.group_models:
@@ -148,6 +227,9 @@ def approximate_one_case(case: ServingCase,
                         change_time.append(start_time)
                         placement_list.append(new_placement)
                         placement = new_placement
+                        print(f"placement changed at time: {start_time}")
+                    else:
+                        print("new_placement equal to placement, no changed!")
                     pt += 1
             
             start = np.concatenate(start_list)
@@ -167,6 +249,7 @@ def approximate_one_case(case: ServingCase,
             placement = ModelPlacementWithReplacement(change_time, placement_list)
             assert isinstance(placement, ModelPlacementWithReplacement)
 
+    # 这一部分是sr-replace-xxx用到的代码
     elif isinstance(placement, ModelPlacementWithReplacement):
         arrivals = workload.arrivals
         change_times = placement.start_times[1:] + [inf]
@@ -478,7 +561,7 @@ def get_general_model_serving_case(case, prof_database=None, model_groups_num: O
             #                                                 duration, slo=slos[i], seed=i)
         return w
 
-    def place_models(controller, placement=None, replacement_time=0, monitor=None):
+    def place_models(controller, placement=None, replacement_time=0, monitor=None, agent=None):
         num_models = len(model_names)
         model_datas = []
         for i in range(num_models):
@@ -489,6 +572,9 @@ def get_general_model_serving_case(case, prof_database=None, model_groups_num: O
             policy = SelectiveReplicationILP(verbose=1)
         elif policy_name == "sr-greedy":
             policy = SelectiveReplicationGreedy(verbose=1)
+        elif "sr-replace-dynamic" in policy_name:
+            policy = MySelectiveReplicationReplacement(verbose=1, dynamic_replacement=True,
+                                                      replacement_time=replacement_time, monitor=monitor)
         elif "sr-replace" in policy_name:
             interval = int(policy_name.split("-")[2])
             policy = SelectiveReplicationReplacement(verbose=1,
@@ -502,6 +588,10 @@ def get_general_model_serving_case(case, prof_database=None, model_groups_num: O
         elif policy_name == "heuristic-dynamic":
             policy = MyModelParallelismHeuReplacement(verbose=2, dynamic_replacement=True,
                                                       replacement_time=replacement_time, monitor=monitor)
+        elif policy_name == "dqn-dynamic":
+            from alpa_serve.placement_policy import MyModelParallelismDQNReplacement
+            policy = MyModelParallelismDQNReplacement(verbose=2, dynamic_replacement=True,
+                                                      replacement_time=replacement_time, monitor=monitor, agent=agent)
         elif "mp-ilp-replace" in policy_name:
             interval = int(policy_name.split("-")[-1])
             policy = ModelParallelismILPReplacement(verbose=2, replacement_interval=interval)
@@ -550,8 +640,18 @@ _DATA_HEADS = ("exp_name", "num_models", "model_groups_num",
                "placement", "goodput", "mode", "solver_time")
 
 def run_one_general_model_case(case, mode, output_file=None, prof_database=None,
-                               debug=False, monitor_kwargs=None, model_groups_num: Optional[int]=1):
+                               debug=False, monitor_kwargs=None, model_groups_num: Optional[int]=1,
+                               rl_kwargs: Optional[dict]=None):
     serving_case = get_general_model_serving_case(case, prof_database, model_groups_num=model_groups_num)
+
+    (exp_name, num_devices, num_devices_per_node, mem_budget, model_types, model_names,
+    total_rate, rate_distribution, arrival_process, arrival_process_kwargs,
+    slo_scale, duration, policy_name) = case
+    if "dqn" in policy_name:
+        cluster_env = ClusterEnv(num_devices=num_devices, mem_budget=mem_budget, num_devices_per_node=num_devices_per_node)
+        rl_kwargs["use_rl"] = True
+        rl_kwargs["cluster_env"] = cluster_env
+
     if "dynamic" in case.policy_name:
         dynamic_placement = True
     else:
@@ -559,7 +659,8 @@ def run_one_general_model_case(case, mode, output_file=None, prof_database=None,
 
     if mode == "simulate":
         stats, placement, solver_time = approximate_one_case(serving_case, debug=debug, 
-                                                dynamic_placement=dynamic_placement, duration=case.duration)
+                                                dynamic_placement=dynamic_placement, duration=case.duration, 
+                                                rl_kwargs=rl_kwargs)
     else:
         stats, placement = run_one_case(serving_case, debug=debug)
 
@@ -601,7 +702,7 @@ def run_one_general_model_case(case, mode, output_file=None, prof_database=None,
 def run_general_model_cases(cases, output_file=None,
                             mode="simulate", debug_tstamp=False, parallel=False, 
                             monitor_kwargs=None, model_groups_num: Optional[int]=1,
-                            duration: Optional[int]=3600):
+                            duration: Optional[int]=3600, rl_kwargs: Optional[dict]=None):
     if not ray.is_initialized():
         ray.init(address="auto", runtime_env={"working_dir": os.getcwd(), "excludes": ["backup"]})
 
@@ -614,7 +715,7 @@ def run_general_model_cases(cases, output_file=None,
     for case in cases:
         results.append(run_one_case_(case, mode,
             output_file=output_file, debug=debug_tstamp, monitor_kwargs=monitor_kwargs, 
-            model_groups_num=model_groups_num))
+            model_groups_num=model_groups_num, rl_kwargs=rl_kwargs))
 
     if parallel:
         results = ray.get(results)
@@ -684,6 +785,7 @@ if __name__ == "__main__":
                     "model_mapping_strategy": args.model_mapping_strategy, 
                     "scheduling_policy": args.scheduling_policy,
                     "detail": args.detail}
+    rl_kwargs = {}
     # choices: {"sr-greedy", "sr-ilp", "mp-ilp",
     #           "mp-round-robin", "mp-greedy-2", "mp-greedy-8", "mp-search", "mp-search-sep"}
     if "azure_v1" in args.trace_dir or "azure_v1" in args.workload:
@@ -807,7 +909,7 @@ if __name__ == "__main__":
     ##### goodput vs num_devices #####
     # total_rate = 5
     num_devices_list = [8]  # 4, 8, 12, 16, 20
-    policies = ["heuristic-dynamic", "mp-search-sep"]
+    policies = ["dqn-dynamic"] # "heuristic-dynamic", "mp-search-sep", "sr-replace-dynamic", "sr-greedy", "my-mp-ilp-dynamic", "dqn-dynamic"
     # policies = ["mp-search-sep"]
     if "goodput_vs_num_devices" in experiments:
         print("=== Running goodput vs. #devices ===")
@@ -940,4 +1042,5 @@ if __name__ == "__main__":
                                 output_file=output_file,
                                 mode=args.mode, parallel=args.parallel,
                                 monitor_kwargs=monitor_kwargs,
-                                model_groups_num=args.model_groups_num)
+                                model_groups_num=args.model_groups_num,
+                                rl_kwargs=rl_kwargs)

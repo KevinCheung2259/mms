@@ -808,6 +808,7 @@ def simulate_requests_mixed(finish, good, tstamps, model_ids, slos, m_id2g_id,
         window_size = 1000
         if replacement and i >= window_size and i % window_size == 0:
             if monitor.decide_whether_to_scale(tstamps, num_models, model_ids, good, window_size, i):
+                monitor.cal_state(model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests)
                 return (model_num_requests, model_num_good_requests,
                         group_num_requests, group_num_good_requests, 
                         receive_request_model_ids, tstamps[i], monitor)
@@ -946,9 +947,15 @@ def simulate_requests_mixed(finish, good, tstamps, model_ids, slos, m_id2g_id,
     # print("model_num_requests", model_num_requests)
     # print("group_num_requests", group_num_requests)
     # assert np.sum(model_num_requests) == np.sum(group_num_requests)
+    
+    # 更新monitor的参数, 包括state
+    monitor = None
+    # monitor.calculate_model_matrix(tstamps, num_models, model_ids, good, len(tstamps)-1, len(tstamps)-1)
+    # monitor.cal_state(model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests)
+
     return (model_num_requests, model_num_good_requests,
             group_num_requests, group_num_good_requests, 
-            receive_request_model_ids, None, None)
+            receive_request_model_ids, None, monitor)
 
 # @numba.jit(nopython=True)
 def simulate_requests_mixed_batching(finish, good, tstamps, model_ids, slos, m_id2g_id, g_id2m_id,

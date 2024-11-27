@@ -3,6 +3,7 @@ import logging
 import multiprocessing
 import time
 from typing import List
+import itertools
 
 import numpy as np
 import ray
@@ -14,6 +15,7 @@ from alpa_serve.placement_policy.base_policy import (
     replica_placement_fast_greedy, replica_placement_beam_search, evolutionary_search)
 from alpa_serve.simulator.workload import Workload
 from alpa_serve.util import eps, inf, to_str_round
+from alpa_serve.simulator.monitor import Monitor
 
 
 def compute_single_throughput(model_data, max_bs):
@@ -204,6 +206,99 @@ class SelectiveReplicationSearch(BasePlacementPolicy):
             evaluator, self.beam_size, self.verbose)
         return sol, None
 
+class MySelectiveReplicationReplacement(SelectiveReplicationGreedy):
+
+    def __init__(self, 
+                 dynamic_replacement: bool = False,
+                 replacement_time: int = 0,
+                 monitor: Monitor = None,
+                 verbose: int = 0):
+        super().__init__(verbose=verbose)
+
+        self.dynamic_replacement = dynamic_replacement
+        self.replacement_time = replacement_time
+        self.monitor = monitor
+
+    def solve_placement(self,
+                        model_datas: List[ModelData],
+                        cluster_env: ClusterEnv,
+                        train_workload: Workload = None):
+        
+        if self.monitor is None:
+            sol, _ = super().solve_placement(model_datas, cluster_env, train_workload)
+            return ModelPlacement(sol.group_configs, sol.group_models), None
+
+        ori_placement = self.monitor.placement
+        scale_up_model = self.monitor.scale_up_model
+        scale_down_model = self.monitor.scale_down_model
+
+        # 对于每个需要扩容的模型，找到需要缩容的模型，进行替换，并检查是否符合内存约束
+        while len(scale_up_model) > 0:
+            ori_group_configs, ori_group_models = ori_placement.group_configs, ori_placement.group_models
+            successful_replacement = False  # 标记是否成功替换
+
+            # 遍历尝试替换的缩容模型组合
+            for num_replace in range(0, len(scale_down_model) + 1):
+                # 尝试组合替换缩容模型
+                for replace_model_indice in itertools.combinations(scale_down_model, num_replace):
+                    new_placement = ori_placement.copy()
+                    new_group_configs, new_group_models = new_placement.group_configs, new_placement.group_models
+
+                    # 遍历所有放置组，进行替换
+                    for g in range(len(new_group_models)):
+                        if all(model_indice in new_group_models[g] for model_indice in replace_model_indice):
+                            # 移除缩容模型
+                            for model_indice in replace_model_indice:
+                                new_group_models[g].remove(model_indice)
+
+                            # 逐步添加扩容模型
+                            for scale_up_model_indice in scale_up_model[:]:  # 使用切片避免修改列表时出错
+                                new_group_models[g].append(scale_up_model_indice)
+
+                                # 创建新的放置方案并验证内存约束
+                                sol = ModelPlacement(new_group_configs, new_group_models)
+                                sol = sol.normalize()
+                                if sol.check(model_datas, cluster_env):  # 内存验证
+                                    # 更新放置方案
+                                    ori_placement = sol
+                                    # 删除已替换的模型
+                                    scale_down_model = [x for x in scale_down_model if x not in replace_model_indice]
+                                    scale_up_model.remove(scale_up_model_indice)  # 删除已放置的扩容模型
+                                    successful_replacement = True
+                                    print(f"Successful replacement: {replace_model_indice} -> {scale_up_model_indice}")
+                                    # break
+                                else:
+                                    # 如果内存不满足，回滚放置，跳出扩容模型添加循环
+                                    new_group_models[g] = ori_group_models[g]
+                                    break
+
+                            # 如果成功替换，退出当前循环
+                            if successful_replacement:
+                                break
+
+                    # 如果成功替换，退出内部循环
+                    if successful_replacement:
+                        break
+                
+                # 如果成功替换，退出外层循环
+                if successful_replacement:
+                    ori_placement = ModelPlacement(new_group_configs, new_group_models)
+                    ori_placement = ori_placement.normalize()
+                    break
+
+            # 如果所有需要扩容的模型都已经得到满足，退出外层循环
+            if len(scale_up_model) == 0:
+                break
+
+            # 如果没有可用的缩容模型进行替换，退出
+            if not successful_replacement:
+                break
+
+        # 输出没有被成功scale_up的模型
+        if len(scale_up_model) > 0:
+            print(f"Failed to scale up models: {scale_up_model}")
+        # 返回最终的模型放置方案
+        return ori_placement, None
 
 class SelectiveReplicationReplacement(BasePlacementPolicy):
 
