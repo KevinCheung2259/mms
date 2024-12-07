@@ -440,12 +440,12 @@ def approximate_scheduler_one_case_one_placement(placement, model_names, prof_re
 def approximate_one_case_one_placement(placement, model_names, prof_ress, model_ids, slos, 
                                        arrivals, mixed = True, enable_batching = False,
                                        unique_type2model_ids = None, scheduling_policy = 'load_balance',
-                                       replacement = False):
+                                       replacement = False, return_monitor = False):
     # Load constants
     group_configs, group_models = placement.group_configs, placement.group_models
 
     # 分析模型的理论吞吐能力
-    if replacement:
+    if replacement or return_monitor:
         monitor = Monitor(placement, model_names, prof_ress)
         monitor.analyse_model_capability()
     else:
@@ -949,9 +949,9 @@ def simulate_requests_mixed(finish, good, tstamps, model_ids, slos, m_id2g_id,
     # assert np.sum(model_num_requests) == np.sum(group_num_requests)
     
     # 更新monitor的参数, 包括state
-    monitor = None
-    # monitor.calculate_model_matrix(tstamps, num_models, model_ids, good, len(tstamps)-1, len(tstamps)-1)
-    # monitor.cal_state(model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests)
+    if monitor is not None:
+        monitor.calculate_model_matrix(tstamps, num_models, model_ids, good, len(tstamps)-1, len(tstamps)-1)
+        monitor.cal_state(model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests)
 
     return (model_num_requests, model_num_good_requests,
             group_num_requests, group_num_good_requests, 

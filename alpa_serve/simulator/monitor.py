@@ -180,8 +180,15 @@ class Monitor:
         # 归一化
         # group_requests_rate = [rate / max(group_requests_rate) for rate in group_requests_rate]
         group_mem_usage = self.cal_group_memory_usage()
+
+        # 归一化
+        model_requests_rate = [rate / (max(self.model_requests_rate)+ 1e-6) for rate in self.model_requests_rate]
+        model_capability = [cap / (max(self.model_capability)+ 1e-6) for cap in self.model_capability]
+        model_mem_usage = [mem / (max(self.model_mem_usage)+ 1e-6) for mem in self.model_mem_usage]
+        group_requests_rate = [rate / (max(group_requests_rate)+ 1e-6) for rate in group_requests_rate]
+        group_mem_usage = [mem / (max(group_mem_usage)+ 1e-6) for mem in group_mem_usage]
         
-        model_info = np.concatenate((self.model_requests_rate, self.model_goodput_rate, self.model_capability, self.model_mem_usage))
+        model_info = np.concatenate((model_requests_rate, self.model_goodput_rate, model_capability, model_mem_usage))
         group_info = np.concatenate((group_requests_rate, group_goodput_rate, group_mem_usage))
         state = np.concatenate((model_info, group_info))
 

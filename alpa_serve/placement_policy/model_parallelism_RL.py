@@ -97,8 +97,11 @@ class GoodputMaximizationEnv(gym.Env):
         # （2）组维度：每个组的请求率、请求成功率、资源使用情况
         state_dim = self.num_models * 4 + self.num_groups * 3
         self.observation_space = spaces.Box(
-            low=0, high=np.inf, shape=(state_dim,), dtype=np.float32
+            low=0, high=1, shape=(state_dim,), dtype=np.float32
         )
+        # self.observation_space = spaces.Box(
+        #     low=0, high=np.inf, shape=(state_dim,), dtype=np.float32
+        # )
 
     def initialize_state(self, placement):
         # 初始化状态：每个模型的请求率、成功率、吞吐能力，每组资源使用情况等
@@ -155,7 +158,12 @@ class GoodputMaximizationEnv(gym.Env):
     def calculate_matrix(self):
         # 计算当前时间步的goodput，基于资源和任务的处理能力
         start_i = np.where(self.arrivals == self.start_time)[0][0]
-        end_i = start_i + self.window_size
+
+        # 非顺序执行，通过随机数生成start_i和end_i
+        # start_i = random.randint(0, len(self.arrivals) - self.window_size)
+        # 随机生成window_size，范围在200-1000之间
+        window_size = random.randint(200, int(len(self.arrivals)/100))
+        end_i = start_i + window_size
         interval_time = self.arrivals[end_i] - self.arrivals[start_i]
 
         (start, finish, good,
@@ -169,14 +177,11 @@ class GoodputMaximizationEnv(gym.Env):
         # 计算每个模型的请求率、请求成功率
         model_requests_rate = model_num_requests / interval_time
         model_goodput_rate = model_num_good_requests / (model_num_requests + 1e-6)
-        # 归一化
-        # model_requests_rate = [rate / max(model_requests_rate) for rate in model_requests_rate]
 
         # 计算每个模型的理论吞吐能力（这里可以尝试替换为模型负载）、每个模型的资源需求
         monitor = Monitor(self.placement, self.model_names, self.prof_ress)
         model_capability, _ = monitor.analyse_model_capability()
-        # 归一化
-        # model_capability = [cap / max(model_capability) for cap in model_capability]
+        
         model_mem_usage = [0] * self.num_models
         for i in range(len(self.placement.group_configs)):
             for model_id in self.placement.group_models[i]:
@@ -190,8 +195,15 @@ class GoodputMaximizationEnv(gym.Env):
 
         group_mem_usage = monitor.cal_group_memory_usage()
 
+        # 归一化
+        model_requests_rate = [rate / (max(model_requests_rate) + 1e-6) for rate in model_requests_rate]
+        model_capability = [cap / (max(model_capability) + 1e-6)for cap in model_capability]
+        model_mem_usage = [mem / (max(model_mem_usage) + 1e-6)for mem in model_mem_usage]
+        group_requests_rate = [rate / (max(group_requests_rate) + 1e-6)for rate in group_requests_rate]
+        group_mem_usage = [mem / (max(group_mem_usage) + 1e-6)for mem in group_mem_usage]
+
         # 更新起始时间
-        self.start_time += interval_time
+        self.start_time = self.arrivals[end_i]
 
         return (goodput, np.concatenate((model_requests_rate, model_goodput_rate, model_capability, model_mem_usage, 
                                         group_requests_rate, group_goodput_rate, group_mem_usage)))
@@ -234,12 +246,15 @@ class DQN:
                                           lr=learning_rate)
         self.gamma = gamma  # 折扣因子
         self.epsilon = epsilon  # epsilon-贪婪策略
+        self.total_count = 0  # 用于使用衰减的贪婪算法
         self.target_update = target_update  # 目标网络更新频率
         self.count = 0  # 计数器,记录更新次数
         self.device = device
 
     def take_action(self, state):  # epsilon-贪婪策略采取动作
-        if np.random.random() < self.epsilon:
+        self.total_count += 1
+        # if np.random.random() < self.epsilon:
+        if np.random.random() < 1 / self.total_count:
             action = np.random.randint(0, 2, size=self.action_dim).astype(int)
         else:
             state = np.array(state)  # 先将列表转换为 numpy.ndarray
@@ -271,8 +286,7 @@ class DQN:
 
         # q_values = self.q_net(states).gather(1, actions)  # Q值
         # # 下个状态的最大Q值
-        # max_next_q_values = self.target_q_net(next_states).max(1)[0].view(
-        #     -1, 1)
+        # max_next_q_values = self.target_q_net(next_states).max(1)[0].view(-1, 1)
         # 计算当前Q值
         q_values = self.q_net(states)
         # 只选择当前动作对应的Q值
@@ -294,7 +308,7 @@ class DQN:
         self.count += 1
 
 
-def train_rl_one_case(placement, model_names, prof_ress, model_ids, slos, 
+def get_rl_agent_one_case(placement, model_names, prof_ress, model_ids, slos, 
                         arrivals, rl_kwargs, mixed = True, enable_batching = False,
                         unique_type2model_ids = None, scheduling_policy = 'load_balance',
                         replacement = False):
@@ -303,7 +317,7 @@ def train_rl_one_case(placement, model_names, prof_ress, model_ids, slos,
     lr = 2e-3
     num_episodes = 500
     hidden_dim = 256
-    gamma = 0.98
+    gamma = 0.02  # 0.98
     epsilon = 0.01
     target_update = 10
     buffer_size = 10000
@@ -314,11 +328,14 @@ def train_rl_one_case(placement, model_names, prof_ress, model_ids, slos,
     # env_name = 'CartPole-v0'
     # env = gym.make(env_name)
     # 创建环境实例
-    placement = ModelPlacement([ParallelConfig(1, 1, 4)] * 2, [[] for _ in range(2)])
+    group_configs = placement.group_configs
+    group_models = [[] for _ in range(len(group_configs))]
+    placement = ModelPlacement(group_configs, group_models)
+    # placement = ModelPlacement([ParallelConfig(1, 1, 4)] * 2, [[] for _ in range(2)])
     # placement = self.monitor.placement
 
     env = GoodputMaximizationEnv(placement, model_names, prof_ress, model_ids, slos, arrivals, rl_kwargs.get('cluster_env', None),
-                                 max_steps=100, window_size=200)
+                                 max_steps=100, window_size=1000)
     random.seed(0)
     np.random.seed(0)
     # env.seed(0)
@@ -327,31 +344,62 @@ def train_rl_one_case(placement, model_names, prof_ress, model_ids, slos,
     state_dim = np.prod(env.observation_space.shape)
     action_dim = env.action_space.n
     agent = DQN(state_dim, hidden_dim, action_dim, lr, gamma, epsilon, target_update, device)
-    return_list = rl_utils.train_off_policy_agent(env, agent, num_episodes, replay_buffer, minimal_size, batch_size)
 
     # 获取本文件所在的绝对路径
     current_path = os.path.dirname(os.path.abspath(__file__))
-    episodes_list = list(range(len(return_list)))
-    plt.figure()
-    plt.plot(episodes_list, return_list)
-    plt.xlabel('Episodes')
-    plt.ylabel('Returns')
-    plt.title('DQN on {}'.format("GoodputMaximizationEnv"))
-    plt.show()
-    # 保存图片到本文件所在的文件夹
-    plt.savefig(os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv.png'))
-    print('图表已保存至:', os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv.png'))
 
-    mv_return = rl_utils.moving_average(return_list, 9)
-    plt.figure()
-    plt.plot(episodes_list, mv_return)
-    plt.xlabel('Episodes')
-    plt.ylabel('Returns')
-    plt.title('DQN on {}'.format("GoodputMaximizationEnv"))
-    plt.show()
-    # 保存图片
-    plt.savefig(os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.png'))
-    print('图表已保存至:', os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.png'))
+    if rl_kwargs['rl_stage'] == 'test':
+        # 检查本地是否有已经训练好的模型
+        if os.path.exists(os.path.join(current_path, 'dqn_model.pth')):
+            agent.q_net.load_state_dict(torch.load(os.path.join(current_path, 'dqn_model.pth')))
+            agent.target_q_net.load_state_dict(torch.load(os.path.join(current_path, 'dqn_model.pth')))
+            # 切换到推理模式
+            agent.q_net.eval()
+            agent.target_q_net.eval()
+            print('Load test model successfully:', os.path.join(current_path, 'dqn_model.pth'))
+            return agent
+        else:
+            assert False, "No trained dnq-model found!"
+    # 训练DQN
+    elif 'train' in rl_kwargs['rl_stage']:
+        # 是否增量学习
+        if rl_kwargs['incre_learning'] and os.path.exists(os.path.join(current_path, 'dqn_model.pth')):
+            agent.q_net.load_state_dict(torch.load(os.path.join(current_path, 'dqn_model.pth')))
+            agent.target_q_net.load_state_dict(torch.load(os.path.join(current_path, 'dqn_model.pth')))
+            
+            # 切换到训练模式
+            agent.q_net.train()
+            agent.target_q_net.train()
+            print('Load increment learning model successfully:', os.path.join(current_path, 'dqn_model.pth'))
+
+        return_list = rl_utils.train_off_policy_agent(env, agent, num_episodes, replay_buffer, minimal_size, batch_size)
+
+        episodes_list = list(range(len(return_list)))
+        plt.figure()
+        plt.plot(episodes_list, return_list)
+        plt.xlabel('Episodes')
+        plt.ylabel('Returns')
+        plt.title('DQN on {}'.format("GoodputMaximizationEnv"))
+        plt.show()
+        # 保存图片到本文件所在的文件夹
+        plt.savefig(os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv.png'))
+        print('图表已保存至:', os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv.png'))
+
+        mv_return = rl_utils.moving_average(return_list, 9)
+        plt.figure()
+        plt.plot(episodes_list, mv_return)
+        plt.xlabel('Episodes')
+        plt.ylabel('Returns')
+        plt.title('DQN on {}'.format("GoodputMaximizationEnv"))
+        plt.show()
+        # 保存图片
+        plt.savefig(os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.png'))
+        print('图表已保存至:', os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.png'))
+
+        # 保存模型
+        if rl_kwargs['save_model']:
+            torch.save(agent.q_net.state_dict(), os.path.join(current_path, 'dqn_model.pth'))
+            print('模型已保存至:', os.path.join(current_path, 'dqn_model.pth'))
 
     return agent
 
@@ -396,7 +444,11 @@ class MyModelParallelismDQNReplacement(MyModelParallelismILP):
         # 得到新的放置策略
         new_placement = get_placement(action, self.monitor.placement.group_configs, len(model_datas))
 
-        return new_placement, None
+        # 判断放置是否符合资源约束, 不符合则返回旧的放置策略
+        if new_placement.check_(self.monitor.prof_ress, cluster_env):
+            return new_placement, None
+        else:
+            return self.monitor.placement, None
 
 
 

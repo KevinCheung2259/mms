@@ -77,7 +77,9 @@ class MyModelParallelismILP(BasePlacementPolicy):
         return max(latency_mem.weight_mem)
 
     def compute_device_group(self, cluster_env):
-        # 对每个节点，遍历其所有可能的设备组合，设备组的大小为2的幂，比如节点的设备数为4，则可能的设备组合为[2, 2]，[4]，[1, 1, 2]
+        '''
+        对每个节点，遍历其所有可能的设备组合，设备组的大小为2的幂，比如节点的设备数为4，则可能的设备组合为[2, 2]，[4]，[1, 1, 2]
+        '''
         device_counts = [cluster_env.num_devices_per_node] * int(cluster_env.num_devices // cluster_env.num_devices_per_node)
         if cluster_env.num_devices % cluster_env.num_devices_per_node:
             device_counts.append(cluster_env.num_devices % cluster_env.num_devices_per_node)
@@ -237,6 +239,8 @@ class MyModelParallelismILP(BasePlacementPolicy):
         cap = [None] * C
         for i in range(C):
             cap[i] = lpSum(z[i][j][k] * model_compute_cap[i][k] for j in range(S) for k in range(K))
+         # 计算w的模(L2范数)
+        # w_norm = sqrt(sum(w[i] * w[i] for i in range(C)))
         obj = lpSum(w[i] * cap[i] for i in range(C))
         prob += obj
 
@@ -306,6 +310,12 @@ class MyModelParallelismILP(BasePlacementPolicy):
                 model_requests[request.model_name] += 1
             for model_name in model_requests:
                 model_requests[model_name] = model_requests[model_name] / interval
+        # 若都不是，则计算全局的模型请求率
+        else:
+            for request in train_workload.requests:
+                model_requests[request.model_name] += 1
+            for model_name in model_requests:
+                model_requests[model_name] = model_requests[model_name] / len(train_workload.requests)
 
         device_groups = self.compute_device_group(cluster_env)
         # device_groups = [[4]]
@@ -473,7 +483,7 @@ class MyModelParallelismHeuReplacement(MyModelParallelismILP):
                                     scale_up_model.remove(scale_up_model_indice)  # 删除已放置的扩容模型
                                     successful_replacement = True
                                     print(f"Successful replacement: {replace_model_indice} -> {scale_up_model_indice}")
-                                    # break
+                                    break
                                 else:
                                     # 如果内存不满足，回滚放置，跳出扩容模型添加循环
                                     new_group_models[g] = ori_group_models[g]
