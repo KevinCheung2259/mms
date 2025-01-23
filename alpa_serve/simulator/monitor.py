@@ -2,7 +2,7 @@ import numpy as np
 from alpa_serve.util import GB
 
 class Monitor:
-    def __init__(self, placement, model_names, prof_ress):
+    def __init__(self, placement, model_names, prof_ress, slo_scale=5):
         self.placement = placement
         self.model_names = model_names
         self.prof_ress = prof_ress
@@ -10,9 +10,10 @@ class Monitor:
         self.low_threshold = 0.1
         self.window_size = 1000
         self.interval_time = 0
+        self.slo_scale = slo_scale
 
     def compute_capability(self, modeL_prof_ress, parallel_config, max_bs=1):
-        slo_scale = 5
+        slo_scale = self.slo_scale
         slo = slo_scale * sum(modeL_prof_ress.para_dict[(1, 1, 1)].latency[1])
         latency_mem = modeL_prof_ress.para_dict.get(parallel_config, None)
 

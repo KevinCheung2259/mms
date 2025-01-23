@@ -162,7 +162,10 @@ class GoodputMaximizationEnv(gym.Env):
         # 非顺序执行，通过随机数生成start_i和end_i
         # start_i = random.randint(0, len(self.arrivals) - self.window_size)
         # 随机生成window_size，范围在200-1000之间
-        window_size = random.randint(200, int(len(self.arrivals)/100))
+        try:
+            window_size = random.randint(200, int(len(self.arrivals)/100))
+        except:
+            window_size = random.randint(50, int(len(self.arrivals)/100))
         end_i = start_i + window_size
         interval_time = self.arrivals[end_i] - self.arrivals[start_i]
 
@@ -175,11 +178,12 @@ class GoodputMaximizationEnv(gym.Env):
         goodput = np.mean(good)
 
         # 计算每个模型的请求率、请求成功率
-        model_requests_rate = model_num_requests / interval_time
+        model_requests_rate = model_num_requests / (interval_time + 1e-6)
         model_goodput_rate = model_num_good_requests / (model_num_requests + 1e-6)
 
         # 计算每个模型的理论吞吐能力（这里可以尝试替换为模型负载）、每个模型的资源需求
-        monitor = Monitor(self.placement, self.model_names, self.prof_ress)
+        slo_scale = int(self.slos[0] / sum(self.prof_ress[self.model_ids[0]].para_dict[ParallelConfig(1,1,1)].latency[1]))
+        monitor = Monitor(self.placement, self.model_names, self.prof_ress, slo_scale)
         model_capability, _ = monitor.analyse_model_capability()
         
         model_mem_usage = [0] * self.num_models
@@ -188,7 +192,7 @@ class GoodputMaximizationEnv(gym.Env):
                 model_mem_usage[model_id] += monitor.cal_model_memory_usage(model_id, self.placement.group_configs[i])
 
         # 计算每个组的请求率、请求成功率
-        group_requests_rate = group_num_requests / interval_time
+        group_requests_rate = group_num_requests / (interval_time + 1e-6)
         group_goodput_rate = group_num_good_requests / (group_num_requests + 1e-6)
         # 归一化
         # group_requests_rate = [rate / max(group_requests_rate) for rate in group_requests_rate]
@@ -375,26 +379,31 @@ def get_rl_agent_one_case(placement, model_names, prof_ress, model_ids, slos,
         return_list = rl_utils.train_off_policy_agent(env, agent, num_episodes, replay_buffer, minimal_size, batch_size)
 
         episodes_list = list(range(len(return_list)))
-        plt.figure()
+        # 绘制回报（奖励）随训练集数变化的折线图
+        plt.figure(figsize=(4, 3))
         plt.plot(episodes_list, return_list)
-        plt.xlabel('Episodes')
-        plt.ylabel('Returns')
-        plt.title('DQN on {}'.format("GoodputMaximizationEnv"))
-        plt.show()
-        # 保存图片到本文件所在的文件夹
-        plt.savefig(os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv.png'))
-        print('图表已保存至:', os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv.png'))
+        plt.xlabel('Episodes', fontsize=14)
+        plt.ylabel('Rewards', fontsize=14)
+        # plt.title('DQN on {}'.format("GoodputMaximizationEnv"), fontsize=16)
+        plt.tight_layout()
+        # 保存为 PDF
+        plt.savefig(os.path.join(current_path, 'DQN_rewards.pdf'))
+        print('图表已保存至:', os.path.join(current_path, 'DQN_rewards.pdf'))
 
+        # 绘制回报的移动平均值折线图
         mv_return = rl_utils.moving_average(return_list, 9)
-        plt.figure()
+
+        plt.figure(figsize=(4, 3))
         plt.plot(episodes_list, mv_return)
-        plt.xlabel('Episodes')
-        plt.ylabel('Returns')
-        plt.title('DQN on {}'.format("GoodputMaximizationEnv"))
-        plt.show()
-        # 保存图片
-        plt.savefig(os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.png'))
-        print('图表已保存至:', os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.png'))
+        plt.xlabel('Episodes', fontsize=14)
+        plt.ylabel('Rewards', fontsize=14)
+        # plt.title('DQN on {}'.format("GoodputMaximizationEnv"), fontsize=16)
+        plt.tight_layout()
+
+        # 保存为 PDF
+        plt.savefig(os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.pdf'))
+        print('图表已保存至:', os.path.join(current_path, 'DQN_on_GoodputMaximizationEnv_moving_average.pdf'))
+
 
         # 保存模型
         if rl_kwargs['save_model']:
@@ -424,10 +433,11 @@ class MyModelParallelismDQNReplacement(MyModelParallelismILP):
     def solve_placement(self,
                         model_datas: List[ModelData],
                         cluster_env: ClusterEnv,
-                        train_workload: Workload = None):
+                        train_workload: Workload = None,
+                        test_workload: Workload = None):
         # 在初始阶段，用ILP求解模型放置
         if self.agent is None:
-            sol, _ = super().solve_placement(model_datas, cluster_env, train_workload)
+            sol, _ = super().solve_placement(model_datas, cluster_env, train_workload, test_workload)
             return ModelPlacement(sol.group_configs, sol.group_models), None
 
         # 使用训练好的DQN模型进行模型放置

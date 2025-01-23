@@ -17,7 +17,7 @@ import numpy as np
 import numba
 
 from alpa_serve.controller import CreateInfo, ModelInfo, GroupInfo, build_logger
-from alpa_serve.profiling import ProfilingResult
+from alpa_serve.profiling import ProfilingResult, ParallelConfig
 from alpa_serve.simulator.cluster import VirtualMesh
 from alpa_serve.simulator.event_loop import (timed_coroutine, clock,
     main_loop, sleep, run_event_loop)
@@ -446,7 +446,8 @@ def approximate_one_case_one_placement(placement, model_names, prof_ress, model_
 
     # 分析模型的理论吞吐能力
     if replacement or return_monitor:
-        monitor = Monitor(placement, model_names, prof_ress)
+        slo_scale = int(slos[0] / sum(prof_ress[model_ids[0]].para_dict[ParallelConfig(1,1,1)].latency[1]))
+        monitor = Monitor(placement, model_names, prof_ress, slo_scale)
         monitor.analyse_model_capability()
     else:
         monitor = None

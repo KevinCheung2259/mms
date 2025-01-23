@@ -29,7 +29,8 @@ from alpa_serve.trace import Trace, TraceReplay
 from benchmarks.alpa.util import get_model_def
 from benchmarks.alpa.run_one_case import run_one_case
 from alpa_serve.placement_policy.base_policy import ModelPlacement
-from my_general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
+from monitor.divide_models import divide_models
+from monitor.my_general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
 from general_model_serving_case import GeneralModelCase, get_general_model_serving_case
 
 
@@ -98,11 +99,14 @@ def approximate_one_case(case: ServingCase,
                 scheduling_policy=scheduling_policy)
             
         elif rl_kwargs.get("rl_stage", False):
-            window_size = 200
+            time_window_size = rl_kwargs.get("replace_window", 100)
+            # time_window_size指的是每次placement的时间窗口大小，window_size指的是对应的请求窗口大小
+            # time_window_size转换为window_size
             arrivals = workload.arrivals
-            ori_i = 0
             start_i = 0
-            end_i = start_i + window_size
+            # 找出workload.arrivals列表中第一个小于等于time_window_size的元素的索引
+            end_i = np.where(arrivals <= (arrivals[0] + time_window_size))[0][-1]
+            
             pt = 0
             start_list, finish_list, good_list = [], [], []
             model_num_requests_list, model_num_good_requests_list = [], []
@@ -112,15 +116,15 @@ def approximate_one_case(case: ServingCase,
 
             while start_i < len(arrivals):
                 # end_i不得超过边界
-                end_i = min(len(arrivals), end_i)
+                end_i = min(len(arrivals) - 1, end_i)  # 确保end_i不超出边界
                 (start, finish, good, 
                     model_num_requests, model_num_good_requests, group_num_requests, group_num_good_requests,
                     receive_request_model_ids, replacement_time, monitor) = approximate_one_case_one_placement(
-                        placement, model_names, prof_ress, 
-                        model_ids[start_i:end_i], slos[start_i:end_i], workload.arrivals[start_i:end_i], 
-                        enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
-                        scheduling_policy=scheduling_policy, replacement=True, return_monitor=True)
-               
+                    placement, model_names, prof_ress, 
+                    model_ids[start_i:end_i+1], slos[start_i:end_i+1], workload.arrivals[start_i:end_i+1], 
+                    enable_batching=enable_batching, unique_type2model_ids=unique_type2model_ids,
+                    scheduling_policy=scheduling_policy, replacement=True, return_monitor=True)
+                
                 start_list.append(start)
                 finish_list.append(finish)
                 good_list.append(good)
@@ -143,9 +147,12 @@ def approximate_one_case(case: ServingCase,
                     print(f"placement changed at time: {replacement_time}")
                 else:
                     print("new_placement equal to placement, no changed!")
+                
                 pt += 1
-                start_i = end_i
-                end_i = start_i + window_size
+                start_i = end_i + 1  # 确保 start_i 向前移动，避免无限循环
+                if start_i < len(arrivals):
+                    end_i = np.where(arrivals <= (arrivals[start_i] + time_window_size))[0][-1]  # 更新 end_i
+
             
             start = np.concatenate(start_list)
             finish = np.concatenate(finish_list)
@@ -469,6 +476,7 @@ if __name__ == "__main__":
     parser.add_argument("--rl_stage", type=str, default=None, choices=["train", "test", "train_test", None])
     parser.add_argument("--incre_learning", type=bool, default=False)
     parser.add_argument("--rl_policy", type=str, default="dqn", choices=["dqn", "ppo"]) # 现在只支持dqn
+    parser.add_argument("--replace_window", type=int, default=100)
     parser.add_argument("--save_model", type=bool, default=False)
     '''
     监控设置
@@ -493,7 +501,9 @@ if __name__ == "__main__":
                     "scheduling_policy": args.scheduling_policy,
                     "detail": args.detail}
     
-    rl_kwargs = {"rl_stage": args.rl_stage, "incre_learning": args.incre_learning, 
+    rl_kwargs = {"rl_stage": args.rl_stage, 
+                 "replace_window": args.replace_window,
+                 "incre_learning": args.incre_learning, 
                  "rl_policy": args.rl_policy, "save_model": args.save_model}
 
     # choices: {"sr-greedy", "sr-ilp", "mp-ilp",
@@ -641,11 +651,11 @@ if __name__ == "__main__":
 
     ##### goodput vs num_devices #####
     # total_rate = 5
-    num_devices_list = [12]  # 4, 8, 12, 16, 20
-    policies = ['dqn-dynamic'] # "heuristic-dynamic", 'mp-search-sep', 'sr-greedy', 'sr-replace-600', 'my-mp-ilp-replace-600', 'my-mp-ilp'
-    # "mp-search-sep", 'sr-replace-600'
-    if policies == ['dqn-dynamic']:
-        rl_kwargs['rl_stage'] = 'train'
+    num_devices_list = [args.num_devices]
+    policies = [args.policy]
+    # "heuristic-dynamic", 'mp-search-sep', 'sr-greedy', 'sr-replace-600', 'my-mp-ilp-replace-600', 'my-mp-ilp'
+    # if policies == ['dqn-dynamic']:
+    #     rl_kwargs['rl_stage'] = 'train'
         # rl_kwargs['incre_learning'] = True
     
     if "goodput_vs_num_devices" in experiments:

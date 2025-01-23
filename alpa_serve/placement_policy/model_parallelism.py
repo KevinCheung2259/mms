@@ -53,7 +53,7 @@ class MyModelParallelismILP(BasePlacementPolicy):
         super().__init__(verbose)
 
         self.time_limit = 30
-        self.lamda = 0.1  # trade-off
+        self.lamda = 0.9  # trade-off
         self.max_bs = 1
         self.model_groups = model_groups
 
@@ -241,10 +241,19 @@ class MyModelParallelismILP(BasePlacementPolicy):
             cap[i] = lpSum(z[i][j][k] * model_compute_cap[i][k] for j in range(S) for k in range(K))
          # 计算w的模(L2范数)
         # w_norm = sqrt(sum(w[i] * w[i] for i in range(C)))
-        obj = lpSum(w[i] * cap[i] for i in range(C))
+        # obj = lpSum(w[i] * cap[i] for i in range(C))
+        total_cap = lpSum(cap[i] for i in range(C))
+        cap_dot_w = lpSum(cap[i] * w[i] for i in range(C))
+        alpha = 0.5
+        obj = alpha * total_cap + (1 - alpha) * cap_dot_w
         prob += obj
 
         # 3. 约束
+        # 模型请求与模型理论吞吐量的余弦相似度小于阈值
+        # 余弦相似度计算公式：cos = sum(w[i] * cap[i]) / (sqrt(sum(w[i] * w[i])) * sqrt(sum(cap[i] * cap[i])))
+        # w_norm = sqrt(sum(w[i] * w[i] for i in range(C)))
+        # cap_norm = sqrt(sum(cap[i] * cap[i] for i in range(C)))
+        # prob += lpSum(w[i] * cap[i] for i in range(C)) / (w_norm * cap_norm) <= self.lamda
         # (a). 每个GPU的内存约束， 这里暂时没有把act_mem考虑进去
         for j in range(S):
             prob += lpSum(z[i][j][k] * model_weight_mem[i][k] for i in range(C) for k in range(K)) <= E
@@ -286,6 +295,7 @@ class MyModelParallelismILP(BasePlacementPolicy):
                         model_datas: List[ModelData],
                         cluster_env: ClusterEnv,
                         train_workload: Workload = None,
+                        test_workload: Workload = None,
                         interval: int = 0,
                         replacement_time: int = -1):
         import pulp
@@ -873,7 +883,8 @@ class ModelParallelismSearch(BasePlacementPolicy):
     def solve_placement_one_eco(self,
                                 model_datas: List[ModelData],
                                 cluster_env: ClusterEnv,
-                                train_workload: Workload = None):
+                                train_workload: Workload = None,
+                                test_workload: Workload = None):
         evaluator = PlacementEvaluator(model_datas, cluster_env, train_workload,
             self.evaluator_method, self.parallel_evaluator)
 
@@ -963,12 +974,13 @@ class ModelParallelismSearch(BasePlacementPolicy):
     def solve_placement(self,
                         model_datas: List[ModelData],
                         cluster_env: ClusterEnv,
-                        train_workload: Workload = None):
+                        train_workload: Workload = None,
+                        test_workload: Workload = None):
         # Generate workloads
         if train_workload is None:
             train_workload = gen_train_workload(model_datas)
 
-        best_sol, _ = self.solve_placement_one_eco(model_datas, cluster_env, train_workload)
+        best_sol, _ = self.solve_placement_one_eco(model_datas, cluster_env, train_workload, test_workload)
 
         # Separate unequal model
         if self.use_separation:
@@ -1106,6 +1118,43 @@ class ModelParallelismSearch(BasePlacementPolicy):
                 beam_sols[cur_num].append(next_sols[next_indices[i]])
 
         return beam_sols[num_devices]
+
+class ModelParallelismSearchReplacement(ModelParallelismSearch):
+    def __init__(self, replacement_interval: int,
+                 use_evo_search: bool = False, 
+                 use_separation: bool = False, 
+                 verbose: int = 0):
+        super().__init__(use_evo_search=use_evo_search,
+                 use_separation=use_separation,
+                 verbose=verbose)
+
+        self.replacement_interval = replacement_interval
+        self.use_evo_search = use_evo_search
+        self.use_separation = use_separation
+
+    def solve_placement(self,
+                        model_datas: List[ModelData],
+                        cluster_env: ClusterEnv,
+                        train_workload: Workload = None):
+        # Generate workloads
+        if train_workload is None:
+            train_workload = gen_train_workload(model_datas)
+
+        # 在未知请求时，用前600s中的情况代替进行初始化
+        temp_workload = train_workload
+        init_ws = temp_workload.split_time_interval(600)
+        ws = train_workload.split_time_interval(self.replacement_interval)
+        ws = [init_ws[0]] + ws[:-1]
+
+        start_times = []
+        placements = []
+        for i in range(len(ws)):
+            sol, _ = super().solve_placement(model_datas, cluster_env, ws[i])
+            start_times.append(ws[i].arrivals[0])
+            placements.append(sol)
+
+        return ModelPlacementWithReplacement(start_times, placements), None
+
 
 class ModelParallelismEqual(BasePlacementPolicy):
     

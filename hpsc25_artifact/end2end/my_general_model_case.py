@@ -29,6 +29,7 @@ from alpa_serve.trace import Trace, TraceReplay
 from benchmarks.alpa.util import get_model_def
 from benchmarks.alpa.run_one_case import run_one_case
 from alpa_serve.placement_policy.base_policy import ModelPlacement
+from monitor.divide_models import divide_models
 from my_general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
 from general_model_serving_case import GeneralModelCase, get_general_model_serving_case
 
@@ -641,12 +642,11 @@ if __name__ == "__main__":
 
     ##### goodput vs num_devices #####
     # total_rate = 5
-    num_devices_list = [12]  # 4, 8, 12, 16, 20
-    policies = ['dqn-dynamic'] # "heuristic-dynamic", 'mp-search-sep', 'sr-greedy', 'sr-replace-600', 'my-mp-ilp-replace-600', 'my-mp-ilp'
-    # "mp-search-sep", 'sr-replace-600'
+    # num_devices_list = [20]  # 4, 8, 12, 16, 20
+    policies = ['dqn-dynamic'] # 'mp-search-sep','sr-replace-600', 'dqn-dynamic'
     if policies == ['dqn-dynamic']:
         rl_kwargs['rl_stage'] = 'train'
-        # rl_kwargs['incre_learning'] = True
+    # "mp-search-sep", 'sr-replace-600'
     
     if "goodput_vs_num_devices" in experiments:
         print("=== Running goodput vs. #devices ===")
@@ -685,9 +685,9 @@ if __name__ == "__main__":
     #                     fixed_slo_scale, duration, policy_name))
 
     ##### goodput vs slo #####
-    # fixed_num_devices = 4
-    # total_rate = 5
-    # slo_scales = [1, 2.5, 5, 7.5, 10, 12.5, 15]
+    # policies = ['mp-search-sep','sr-replace-600'] # 'mp-search-sep','sr-replace-600', 'dqn-dynamic'
+    # if policies == ['dqn-dynamic']:
+    #     rl_kwargs['rl_stage'] = 'train'
     if "goodput_vs_slo" in experiments:
         print("=== Running goodput vs. SLO ===")
         exp_name = "goodput_vs_slo"
@@ -699,8 +699,10 @@ if __name__ == "__main__":
                     arrival_process, arrival_process_kwargs,
                     slo_scale, duration, policy_name))
 
-    # rate_list = [7.5, 15, 25, 30]
     ##### goodput vs rate/rate_scale #####
+    # policies = ['mp-search-sep','sr-replace-600'] # 'mp-search-sep','sr-replace-600', 'dqn-dynamic'
+    # if policies == ['dqn-dynamic']:
+    #     rl_kwargs['rl_stage'] = 'train'
     if "goodput_vs_rate" in experiments:
         if args.workload == "synthetic":
             print("=== Running goodput vs. rate ===")
@@ -728,7 +730,9 @@ if __name__ == "__main__":
 
 
     ##### goodput vs cv/cv_scale #####
-    # cv_list = [1, 3, 5, 7, 9, 11, 13, 15]
+    # policies = ['dqn-dynamic'] # 'mp-search-sep','sr-replace-600', 'dqn-dynamic'
+    # if policies == ['dqn-dynamic']:
+    #     rl_kwargs['rl_stage'] = 'train'
     if "goodput_vs_cv" in experiments:
         if args.workload == "synthetic":
             print("=== Running goodput vs. cv ===")

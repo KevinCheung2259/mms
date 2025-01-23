@@ -5,7 +5,8 @@ from alpa_serve.placement_policy.model_parallelism import (
     ModelParallelismILP, ModelParallelismRR, MyModelParallelismILP, MyModelParallelismILPReplacement, ModelParallelismILPReplacement,
     MyModelParallelismHeuReplacement, 
     ModelParallelismGreedy, ModelParallelismSearch,
-    ModelParallelismEqual)
+    ModelParallelismEqual,
+    ModelParallelismSearchReplacement)
 from alpa_serve.placement_policy.selective_replication import (
     SelectiveReplicationILP, SelectiveReplicationGreedy,
     SelectiveReplicationUniform, SelectiveReplicationSearch,

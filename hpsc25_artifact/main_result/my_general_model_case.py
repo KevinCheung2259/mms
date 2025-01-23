@@ -29,7 +29,8 @@ from alpa_serve.trace import Trace, TraceReplay
 from benchmarks.alpa.util import get_model_def
 from benchmarks.alpa.run_one_case import run_one_case
 from alpa_serve.placement_policy.base_policy import ModelPlacement
-from my_general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
+from monitor.divide_models import divide_models
+from monitor.my_general_model_suite import synthetic_suite, azure_v1_suite, azure_v2_suite
 from general_model_serving_case import GeneralModelCase, get_general_model_serving_case
 
 
@@ -642,7 +643,7 @@ if __name__ == "__main__":
     ##### goodput vs num_devices #####
     # total_rate = 5
     num_devices_list = [12]  # 4, 8, 12, 16, 20
-    policies = ['dqn-dynamic'] # "heuristic-dynamic", 'mp-search-sep', 'sr-greedy', 'sr-replace-600', 'my-mp-ilp-replace-600', 'my-mp-ilp'
+    policies = ["mp-search-sep", 'sr-replace-600'] # "heuristic-dynamic", 'mp-search-sep', 'sr-greedy', 'sr-replace-600', 'my-mp-ilp-replace-600', 'my-mp-ilp'
     # "mp-search-sep", 'sr-replace-600'
     if policies == ['dqn-dynamic']:
         rl_kwargs['rl_stage'] = 'train'

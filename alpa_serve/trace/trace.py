@@ -418,6 +418,9 @@ class Trace:
                     model_histogram[m] = copy.deepcopy(function_histogram[f])
                 else:
                     model_histogram[m] += function_histogram[f]
+            #         model_histogram[m] = np.concatenate((model_histogram[m], function_histogram[f]))
+            # for m in model_histogram:
+            #     model_histogram[m] = np.sort(model_histogram[m])
 
             # 2. re-histogram based on `interval_seconds`
             histogram_dataset = OrderedDict()

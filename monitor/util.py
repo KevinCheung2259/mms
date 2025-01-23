@@ -71,3 +71,47 @@ def plot_model_traces(replays: Dict[str, TraceReplay], model_names: List[str], d
     
     # 保存图表到为pdf
     plt.savefig(os.path.join(current_path, "model_requests.pdf"))
+
+
+def plot_all_models_requests(replays: Dict[str, TraceReplay], model_names: List[str], duration: int, interval: int):
+    '''
+    汇总并绘制所有模型的请求数折线图
+    '''
+    # 初始化一个空的列表，用于存储每个模型的请求数
+    total_requests = np.zeros(duration // interval)  # 假设每个间隔的请求数初始化为 0
+
+    # 对每个模型进行处理，计算其请求数并累加
+    for model_name in model_names:
+        # 获取每个模型的请求数
+        model_requests = cal_num_requests_per_interval(replays, model_name, duration, interval)
+        
+        # 将每个模型的请求数累加到 total_requests 中
+        total_requests += np.array(model_requests)
+    
+    arrival_rate = total_requests / interval
+
+    # 以列表形式打印arrival_rate，5个元素为一行
+    # for i in range(0, len(arrival_rate), 5):
+    #     print(arrival_rate[i:i+5])     
+
+    # 绘制所有模型的总请求数折线图
+    plt.figure(figsize=(4, 3))
+    plt.plot(arrival_rate, label="Total requests", color="tab:purple")
+
+    # 设置图表标题和标签
+    # plt.title("Total Requests for All Models", fontsize=16)
+    plt.xlabel("Time (minutes)", fontsize=14)
+    plt.ylabel("Arrival Rate", fontsize=14)
+    # plt.legend()
+
+    # 调整布局并显示图表
+    plt.tight_layout()
+
+    # 获取当前文件的路径
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    
+    # 保存图表为 PDF 文件
+    plt.savefig(os.path.join(current_path, "all_models_requests_rate.pdf"))
+
+    # 显示图表
+    plt.show()

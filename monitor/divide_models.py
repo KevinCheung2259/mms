@@ -2,7 +2,6 @@ from alpa_serve.trace import Trace, TraceReplay
 from typing import List, Dict
 import multiprocessing
 import time
-from util import cal_num_requests_per_interval
 
 # 计算两个模型之间请求的相似度
 def cal_similarity(model_1: str,
@@ -13,6 +12,7 @@ def cal_similarity(model_1: str,
     计算两个模型之间请求的相关性
     '''
     interval_seconds = replays[model_1].interval_seconds
+    from util import cal_num_requests_per_interval
     model_1_requests = cal_num_requests_per_interval(replays, model_1, duration, interval_seconds)
     model_2_requests = cal_num_requests_per_interval(replays, model_2, duration, interval_seconds)
     num_intervals = len(model_1_requests)

@@ -312,12 +312,16 @@ class SelectiveReplicationReplacement(BasePlacementPolicy):
     def solve_placement(self,
                         model_datas: List[ModelData],
                         cluster_env: ClusterEnv,
-                        train_workload: Workload = None):
+                        train_workload: Workload = None,
+                        test_workload: Workload = None):
         # Generate workloads
         if train_workload is None:
             train_workload = gen_train_workload(model_datas)
 
-        ws = train_workload.split_time_interval(self.replacement_interval)
+        # 在未知请求时，用前replacement_interval秒内的情况代替进行初始化
+        init_ws = train_workload.split_time_interval(self.replacement_interval)
+        ws = test_workload.split_time_interval(self.replacement_interval)
+        ws = [init_ws[0]] + ws[:-1]
 
         start_times = []
         placements = []

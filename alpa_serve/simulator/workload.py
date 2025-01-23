@@ -375,6 +375,10 @@ class Workload:
 
             # 记录每个模型中每秒的请求数
             model_queue = [0] * int(duration * 1 / sample_interval)
+            # print("len(tmp_start)", len(tmp_start))
+            # print("len(tmp_finish)", len(tmp_finish))
+            # # 输出temp_finish中NaN的位置
+            # print("tmp_finish", np.argwhere(np.isnan(tmp_finish)))
             for i in range(len(tmp_start)):
                 start_time = int((tmp_start[i]-begin_time) * 1 / sample_interval)
                 end_time = int((tmp_finish[i]-begin_time) * 1 / sample_interval)
