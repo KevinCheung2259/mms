@@ -1,0 +1,1 @@
+tmp	4	12884901888	bert-1.3b	8	30	uniform	gamma	{'cv': 4}	0.5	50	mp-greedy-2	None	None	None	None	ModelPlacement(group_configs=(ParallelConfig(dp=1, op=1, pp=2), ParallelConfig(dp=1, op=1, pp=2)), group_models=((0, 1, 2, 3, 4, 5, 6, 7), (0, 1, 2, 3, 4, 5, 6, 7)))	0.0	simulate

@@ -5,8 +5,8 @@ chrome_trace/
 *.csv
 *.txt
 *.png
-*.pdf
-*.sh
+# *.pdf
+# *.sh
 *.zip
 
 # Python cache
@@ -54,7 +54,7 @@ alpa_debug_info
 # Analysis temp files
 *.nvprof
 *.prof
-*.tsv
+# *.tsv
 *.hlo
 
 # Tests temp files
